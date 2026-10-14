@@ -84,6 +84,14 @@ Item {
   // for that second would flash BlueZ's single "Battery" row in their place.
   readonly property bool streaming: reading.stream === true
     && (readerRunning || refreshing)
+    && !(controlBackend === "redmi" && !streamHasLevels)
+  // A Fast Pair channel that is up but has sent no battery: the Redmi Buds 5
+  // answer the stream with a model id and nothing else, so the bridge's
+  // figures are the only ones there are and must not be shadowed by it.
+  readonly property bool streamHasLevels: reading.single === true
+    ? Model.readerLevel(reading, "battery") >= 0
+    : (Model.readerLevel(reading, "left") >= 0 || Model.readerLevel(reading, "right") >= 0
+       || Model.readerLevel(reading, "case") >= 0)
 
   // ---- What the mode bridge said about the battery, on a device whose control
   //      channel carries it (the Nothing one does). Second to the Fast Pair
@@ -108,6 +116,13 @@ Item {
     : (bridgeBattery && Model.bridgeCharging(ancState, "right"))
   readonly property bool caseCharging: streaming ? reading.caseCharging === true
     : (bridgeBattery && Model.bridgeCharging(ancState, "case"))
+  // Minutes of listening left on a bud, as the bridge works it out from the
+  // history of its battery. Only while the bud is draining, and only from the
+  // bridge: the Fast Pair stream gives no such thing.
+  readonly property int leftEstimate: bridgeBattery && !leftCharging
+    ? Model.bridgeEstimate(ancState, "left") : -1
+  readonly property int rightEstimate: bridgeBattery && !rightCharging
+    ? Model.bridgeEstimate(ancState, "right") : -1
   readonly property bool perBud: leftLevel >= 0 || rightLevel >= 0
   // The case only reports while it is open. The Nothing bridge keeps its last
   // reading and says so; the panel dims that row rather than dropping it.

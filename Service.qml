@@ -665,6 +665,8 @@ Item {
     // and `battery` above is where its figure lives.
     function left(): string { return String(root.primary ? root.primary.leftLevel : -1) }
     function leftFor(which: string): string { return root.levelOf(which, "leftLevel") }
+    function leftEstimateFor(which: string): string { return root.levelOf(which, "leftEstimate") }
+    function rightEstimateFor(which: string): string { return root.levelOf(which, "rightEstimate") }
     function right(): string { return String(root.primary ? root.primary.rightLevel : -1) }
     function rightFor(which: string): string { return root.levelOf(which, "rightLevel") }
     function batteryCase(): string { return String(root.primary ? root.primary.caseLevel : -1) }

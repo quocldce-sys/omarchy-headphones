@@ -1170,10 +1170,61 @@ Deno.test("extra modes come from the backend row, and only that row", () => {
   for (const row of Model.BACKENDS.filter(r => r.name !== "tozo")) {
     assertEquals(Model.modeNames(row.name), Model.MODE_ORDER, row.name);
     assertEquals(Model.modesAvailable({ available: six }, row.name), ["off", "anc", "ambient"], row.name);
-    assertEquals(Model.modeOptions(Model.MODE_ORDER, row.name).map(o => o.label),
-      ["Off", "ANC", "Ambient", "TalkThru"], row.name);
+    // A row that renames a mode says so with modeLabels (Redmi's Transparency);
+    // every other row keeps the four default names.
+    if (!row.modeLabels) {
+      assertEquals(Model.modeOptions(Model.MODE_ORDER, row.name).map(o => o.label),
+        ["Off", "ANC", "Ambient", "TalkThru"], row.name);
+    }
   }
+  assertEquals(Model.modeOptions(Model.MODE_ORDER, "redmi").map(o => o.label),
+    ["Off", "ANC", "Transparency", "TalkThru"]);
   assertEquals(Model.modesAvailable({ available: six }, ""), ["off", "anc", "ambient"]);
   assertEquals(Model.modesAvailable({}, "tozo"), Model.MODE_ORDER);
   assertEquals(Model.allModeNames(), [...Model.MODE_ORDER, "wind", "leisure", "adaptive"]);
+});
+
+Deno.test("Redmi Buds 5 is picked by its name and the 0xFD2D service, and by nothing less", () => {
+  const fd2d = "0000fd2d-0000-1000-8000-00805f9b34fb";
+  const fastPair = "df21fe2c-2515-4fdb-8886-f12c4d67927c";
+  const ble = "48:B4:41:00:00:01";
+  assertEquals(Model.controlBackend([fd2d, fastPair], "", "Redmi Buds 5"), "redmi");
+  // A Fast Pair address next to it must not take it back to the BLE row.
+  assertEquals(Model.controlBackend([fd2d, fastPair], ble, "Redmi Buds 5"), "redmi");
+  // The service alone, or the name alone, is not the claim.
+  assertEquals(Model.controlBackend([fd2d], "", "Some Other Buds"), "");
+  assertEquals(Model.controlBackend([fastPair], "", "Redmi Buds 5"), "");
+  assertEquals(Model.bridgeArgs("redmi", { address: "AA:BB:CC:00:00:01", name: "Redmi Buds 5" }), ["AA:BB:CC:00:00:01"]);
+  assertEquals(Model.bridgeFor("redmi"), "redmi-bridge");
+});
+
+Deno.test("a bud's estimate comes from the bridge line and is never carried", () => {
+  assertEquals(Model.bridgeEstimate({ estimate: { left: 410, right: 395 } }, "left"), 410);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: 410, right: 395 } }, "right"), 395);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: 410 } }, "right"), -1);
+  assertEquals(Model.bridgeEstimate({}, "left"), -1);
+  assertEquals(Model.bridgeEstimate(null, "left"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: [410] }, "0"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: "410" } }, "left"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: 0 } }, "left"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: -5 } }, "left"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: 99999 } }, "left"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: NaN } }, "left"), -1);
+});
+
+Deno.test("a duration reads as an estimate, in steps of five minutes", () => {
+  assertEquals(Model.durationLabel(380), "~6h 20m");
+  assertEquals(Model.durationLabel(360), "~6h");
+  assertEquals(Model.durationLabel(45), "~45m");
+  assertEquals(Model.durationLabel(2), "~5m");
+  assertEquals(Model.durationLabel(119), "~2h");
+  assertEquals(Model.durationLabel(0), "");
+  assertEquals(Model.durationLabel(-3), "");
+  assertEquals(Model.durationLabel(undefined), "");
+  assertEquals(Model.durationLabel(Infinity), "");
+});
+
+Deno.test("Redmi Buds 5 offers the three modes, and names the second one as its app does", () => {
+  const row = Model.backendRow("redmi");
+  assertEquals(row.modeLabels.ambient, "Transparency");
 });

@@ -111,6 +111,8 @@ Panel {
   readonly property int leftLevel: current ? current.leftLevel : -1
   readonly property int rightLevel: current ? current.rightLevel : -1
   readonly property int caseLevel: current ? current.caseLevel : -1
+  readonly property int leftEstimate: current ? current.leftEstimate : -1
+  readonly property int rightEstimate: current ? current.rightEstimate : -1
   readonly property bool leftCharging: current ? current.leftCharging : false
   readonly property bool rightCharging: current ? current.rightCharging : false
   readonly property bool caseCharging: current ? current.caseCharging : false
@@ -633,11 +635,13 @@ Panel {
             label: "Left"
             level: root.leftLevel
             charging: root.leftCharging
+            estimate: root.leftEstimate
           }
           BatteryRow {
             label: "Right"
             level: root.rightLevel
             charging: root.rightCharging
+            estimate: root.rightEstimate
           }
           // No charging bolt for the case, on purpose. The earbuds report the case
           // second-hand and lazily: its level sat at 78% for hours while the case
@@ -1261,6 +1265,9 @@ Panel {
     // A reading the component left behind rather than one it is giving now:
     // drawn at half strength, so it reads as a memory and not as a fault.
     property bool stale: false
+    // Minutes of listening left at the pace the battery has been going down,
+    // when the bridge has worked one out; -1 for none, which draws nothing.
+    property int estimate: -1
 
     readonly property bool known: level >= 0
     readonly property bool low: known && level <= root.lowThreshold && !charging
@@ -1333,6 +1340,7 @@ Panel {
     Text {
       id: rowPercent
       text: Model.percentLabel(row.level)
+        + (row.known && row.estimate > 0 ? "  ·  " + Model.durationLabel(row.estimate) : "")
       color: row.tint
       opacity: row.strength
       font.family: root.fontFamily

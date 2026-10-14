@@ -448,6 +448,7 @@ var SOUNDCORE_UUID_PREFIX = "0cf12d31-fac3-4553-bd80-d6832e7"
 var OPPO_HEYMELODY_UUID = "0000079a-d102-11e1-9b23-00025b00a5a5"
 var BOSE_BMAP_UUID = "00000000-deca-fade-deca-deafdecacaff"
 var BOSE_SPP_UUID = "9b26d8c0-a8ed-440b-95b0-c4714a518bcc"
+var REDMI_FD2D_UUID = "0000fd2d-0000-1000-8000-00805f9b34fb"
 
 // The UUIDs `bluetoothctl info <address>` printed, lowercased.
 // Quickshell.Bluetooth exposes no uuids property, so the SDP record is read the
@@ -530,6 +531,16 @@ var BACKENDS = [
     modelNames: ["HUAWEI FreeBuds SE 2"],
     modelUuids: ["00001101-0000-1000-8000-00805f9b34fb"],
     args: ["address", "name"] },
+  { name: "redmi", bridge: "redmi-bridge",
+    // Battery and noise control (Off / ANC / Transparency): the Redmi Buds 5
+    // send Fast Pair a model id and no battery frame, so everything comes from
+    // the Xiaomi RCSP service on 0xFD2D. Claimed by its reported name and that
+    // service, like the two rows above.
+    modelNames: ["Redmi Buds 5"],
+    modelUuids: [REDMI_FD2D_UUID],
+    args: ["address"],
+    // What the Xiaomi Earbuds app calls the second mode.
+    modeLabels: { ambient: "Transparency" } },
   { name: "jbl", bridge: "jbl-bridge",
     ble: true, args: ["bleAddress", "modelId"] }
 ]
@@ -736,6 +747,35 @@ function bridgeCharging(state, key) {
   if (!battery || typeof battery !== "object") return false
   var list = battery.charging
   return Array.isArray(list) && list.indexOf(key) !== -1
+}
+
+// ---- How long a bud should last, in minutes, from a bridge that works it out
+//      from the battery history (the Redmi one does):
+//
+//        {"estimate": {"left": 410, "right": 395}}
+//
+//      Not carried from one line to the next, unlike the levels: a figure the
+//      bridge stopped giving is one it no longer stands behind. -1 for a bud
+//      with none, and for anything that is not a whole number of minutes in
+//      range.
+function bridgeEstimate(state, key) {
+  var estimate = state ? state.estimate : undefined
+  if (!estimate || typeof estimate !== "object" || Array.isArray(estimate)) return -1
+  var value = estimate[key]
+  if (typeof value !== "number" || !isFinite(value)) return -1
+  if (value <= 0 || value > 2880) return -1
+  return Math.round(value)
+}
+
+// "~6h 20m", "~45m": an estimate, so it says so, and in steps of five minutes
+// because it is no better than that. "" for no figure.
+function durationLabel(minutes) {
+  if (typeof minutes !== "number" || !isFinite(minutes) || minutes <= 0) return ""
+  var rounded = Math.max(5, Math.round(minutes / 5) * 5)
+  var hours = Math.floor(rounded / 60)
+  var rest = rounded % 60
+  if (hours === 0) return "~" + rest + "m"
+  return "~" + hours + "h" + (rest === 0 ? "" : " " + rest + "m")
 }
 
 function bridgeCaseStale(state) {

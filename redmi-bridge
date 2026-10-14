@@ -1,0 +1,738 @@
+#!/usr/bin/env python3
+"""Hold one 0xFD2D RFCOMM link to Redmi Buds 5: battery, noise control, and how
+long the battery should last.
+
+    redmi-bridge <classic-address>
+
+Prints one JSON object per line, and reads one command per line:
+
+    stdout   {"modes": true, "mode": "anc",
+              "available": ["off","anc","ambient"],
+              "battery": {"left": 75, "right": 80, "case": 100,
+                          "charging": []},
+              "estimate": {"left": 410, "right": 395}}
+             {"modes": false, "error": "..."}
+    stdin    set off | set anc | set ambient
+
+`estimate` is minutes of listening left on each earbud at the rate this pair
+has been using its battery, learned from the history the bridge keeps in
+$XDG_STATE_HOME/omaphones/redmi-battery.json. It is absent until there is
+enough to go on, and never a figure from a datasheet.
+
+Exit codes are BRIDGE.md's: 0 clean stop, 1 transient (the channel never
+opened, or closed under us; also refused, since the earbuds may serve the
+channel to one client and the phone's Xiaomi Earbuds app holding it is the
+likely case), 3 linked but silent (nothing answered), 4 setup failure
+(bad arguments, a Python without D-Bus).
+
+Protocol, as the Redmi Buds 5 answered it, and as the Xiaomi Earbuds app
+(com.mi.earphone 1.38.0) reads it: RCSP on the SPP service
+`0000fd2d-0000-1000-8000-00805f9b34fb`.
+
+    frame    FE DC BA <flags> <opcode> <len u16 BE> <body> EF
+             flags: 0x80 = command, 0x40 = wants a response
+             a command's body is  <sn> <param>
+             a response's body is <status> <sn> <payload>
+    battery  ask FE DC BA C0 02 00 05 <sn> FF FF FF FF EF (GetTargetInfo);
+             attribute 7 of the answer, or attribute 0 of the status report
+             (opcode 0x0E) the earbuds send on a change, is one byte each for
+             left, right, case: low seven bits the level, bit 7 charging,
+             0xFF no reading. <length> <type> <value> attributes
+    config   a config is <len> <id u16 BE> <value>, len counting the id and
+             the value. Config 11 is the noise control: <state> <level>,
+             state 0 off, 1 noise cancelling, 2 transparency
+             get   opcode F3, param <id u16 BE>; the answer is a response
+                   carrying the config
+             set   opcode F2, param the config; answered by a response with
+                   status 0, and the earbuds then announce the new state on
+                   their own, as opcode F4 carrying the config
+    level    the second byte of config 11 is the strength inside a state
+             (balanced, comfortable, deep, ... for cancelling). Every set
+             sends the level this state was last seen at, or 0
+
+What is sent: the battery ask, the config 11 get, and, on `set`, one config 11
+set. Nothing else, and no answer to the earbuds' own announcements: none has
+been seen to be needed.
+"""
+import ctypes
+import json
+import os
+import re
+import signal
+import sys
+import time
+
+try:
+    import dbus
+    import dbus.mainloop.glib
+    import dbus.service
+    from gi.repository import GLib
+except ImportError as error:
+    sys.stdout.write(json.dumps({
+        "modes": False,
+        "error": "missing python dependency %s"
+                 % (getattr(error, "name", None) or error),
+    }) + "\n")
+    sys.stdout.flush()
+    sys.exit(4)
+
+try:
+    from gi.repository import GLibUnix
+    unix_signal_add = GLibUnix.signal_add
+except ImportError:
+    unix_signal_add = GLib.unix_signal_add
+
+UUID = "0000fd2d-0000-1000-8000-00805f9b34fb"
+PROFILE_PATH = "/io/github/ncr/omaphones/redmi"
+ADDRESS = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+
+HEADER = b"\xFE\xDC\xBA"
+TAIL = 0xEF
+FLAG_COMMAND = 0x80
+FLAG_WANTS_RESPONSE = 0x40
+OP_GET_TARGET_INFO = 0x02
+OP_REPORT_STATUS = 0x0E
+OP_SET_CONFIG = 0xF2
+OP_GET_CONFIG = 0xF3
+OP_NOTIFY_CONFIG = 0xF4
+ATTR_BATTERY_INFO = 7
+ATTR_BATTERY_REPORT = 0
+NO_READING = 0xFF
+PARTS = ("left", "right", "case")
+
+CONFIG_NOISE = 11
+MODE_FROM_STATE = {0: "off", 1: "anc", 2: "ambient"}
+STATE_FROM_MODE = {mode: state for state, mode in MODE_FROM_STATE.items()}
+AVAILABLE = ["off", "anc", "ambient"]
+
+EXIT_TRANSIENT = 1
+EXIT_UNSUPPORTED = 3
+EXIT_SETUP = 4
+REPLY_TIMEOUT = 5
+CONNECT_TIMEOUT = 30
+CONNECT_DELAY = 500
+FIRST_ANSWER_MS = 5000
+MODE_GRACE_MS = 2000
+POLL_MS = 30000
+RECHECK_MS = 800
+MAX_BODY = 1024
+
+# How long the battery should last, from the history this pair has left.
+# Levels come in steps of five, so a rate needs a stretch long enough to cross
+# at least one step; a stretch is broken by a gap, a charge, or a bud that
+# stopped reporting, and only the recent part of it counts, so the figure
+# follows how the earbuds are being used now.
+HISTORY_KEEP_SECONDS = 7 * 24 * 3600
+HISTORY_MAX_SAMPLES = 3000
+SAMPLE_EVERY_SECONDS = 600
+SEGMENT_MAX_GAP_SECONDS = 1800
+SEGMENT_WINDOW_SECONDS = 3 * 3600
+MIN_SPAN_SECONDS = 1800
+MIN_DROP_PERCENT = 5
+MAX_ESTIMATE_MINUTES = 48 * 60
+ESTIMATE_STEP_MINUTES = 5
+
+
+def emit(payload):
+    try:
+        sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+    except (BrokenPipeError, ValueError):
+        os._exit(0)
+
+
+def arm_parent_death_signal():
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.prctl(1, signal.SIGTERM)
+    except Exception:
+        return
+    if os.getppid() == 1:
+        os._exit(0)
+
+
+# ---- Frames
+
+def encode(opcode, sn, param=b"", flags=FLAG_COMMAND | FLAG_WANTS_RESPONSE):
+    body = bytes([sn & 0xFF]) + param
+    return (HEADER + bytes([flags, opcode]) + len(body).to_bytes(2, "big")
+            + body + bytes([TAIL]))
+
+
+def encode_get_target_info(sn):
+    return encode(OP_GET_TARGET_INFO, sn, b"\xFF\xFF\xFF\xFF")
+
+
+def encode_get_noise(sn):
+    return encode(OP_GET_CONFIG, sn, CONFIG_NOISE.to_bytes(2, "big"))
+
+
+def encode_set_noise(sn, state, level):
+    config = bytes([4]) + CONFIG_NOISE.to_bytes(2, "big") + bytes([state, level])
+    return encode(OP_SET_CONFIG, sn, config)
+
+
+def split_frame(buffer):
+    """Take one frame off the front of buffer.
+
+    Returns (frame, rest). frame is None while more bytes are needed. Bytes
+    before a header are dropped, and a length or tail that cannot belong to a
+    frame of this protocol drops one byte and looks again, so garbage cannot
+    stall the loop.
+    """
+    buffer = bytearray(buffer)
+    while True:
+        start = buffer.find(HEADER)
+        if start < 0:
+            return None, buffer[-2:]
+        del buffer[:start]
+        if len(buffer) < 7:
+            return None, buffer
+        size = int.from_bytes(buffer[5:7], "big")
+        if size > MAX_BODY:
+            del buffer[:1]
+            continue
+        total = 8 + size
+        if len(buffer) < total:
+            return None, buffer
+        if buffer[total - 1] != TAIL:
+            del buffer[:1]
+            continue
+        frame = bytes(buffer[:total])
+        del buffer[:total]
+        return frame, buffer
+
+
+def parts_of(frame):
+    """(is_command, opcode, status, payload) of a whole frame.
+
+    A command's body is <sn> <payload>; a response's is <status> <sn>
+    <payload>, and a command has no status, so None."""
+    flags = frame[3]
+    opcode = frame[4]
+    body = frame[7:-1]
+    if flags & FLAG_COMMAND:
+        return True, opcode, None, body[1:]
+    if len(body) < 2:
+        return False, opcode, None, b""
+    return False, opcode, body[0], body[2:]
+
+
+def attributes(data):
+    """The <length> <type> <value> list as {type: bytes}; stops at damage."""
+    out = {}
+    index = 0
+    while index + 2 <= len(data):
+        length = data[index]
+        if length <= 0 or index + 1 + length > len(data):
+            break
+        out[data[index + 1]] = bytes(data[index + 2:index + 1 + length])
+        index += 1 + length
+    return out
+
+
+def configs(data):
+    """The <len> <id u16 BE> <value> list as {id: bytes}; stops at damage."""
+    out = {}
+    index = 0
+    while index + 3 <= len(data):
+        length = data[index]
+        if length < 2 or index + 1 + length > len(data):
+            break
+        out[int.from_bytes(data[index + 1:index + 3], "big")] = \
+            bytes(data[index + 3:index + 1 + length])
+        index += 1 + length
+    return out
+
+
+def battery_from(values):
+    """{"left", "right", "case", "charging"} from one byte per part, or None."""
+    battery = {}
+    charging = []
+    for name, byte in zip(PARTS, values):
+        if byte == NO_READING:
+            continue
+        level = byte & 0x7F
+        if level > 100:
+            continue
+        battery[name] = level
+        if byte & 0x80:
+            charging.append(name)
+    if not battery:
+        return None
+    battery["charging"] = charging
+    return battery
+
+
+def battery_of(frame):
+    """The battery a frame carries, or None for one that has none to give."""
+    is_command, opcode, status, payload = parts_of(frame)
+    if is_command:
+        if opcode != OP_REPORT_STATUS:
+            return None
+        found = attributes(payload)
+        wanted = ATTR_BATTERY_REPORT
+    else:
+        if opcode != OP_GET_TARGET_INFO or status != 0:
+            return None
+        found = attributes(payload)
+        wanted = ATTR_BATTERY_INFO
+    values = found.get(wanted)
+    return battery_from(values) if values else None
+
+
+def noise_of(frame):
+    """(state, level) of the noise control a frame carries, or None."""
+    is_command, opcode, status, payload = parts_of(frame)
+    if is_command:
+        if opcode != OP_NOTIFY_CONFIG:
+            return None
+    elif opcode != OP_GET_CONFIG or status != 0:
+        return None
+    value = configs(payload).get(CONFIG_NOISE)
+    if value is None or len(value) < 2 or value[0] not in MODE_FROM_STATE:
+        return None
+    return value[0], value[1]
+
+
+# ---- How long the battery should last
+
+def sample_of(now, battery):
+    """[time, left, right, case, charging bits], -1 for a part with no reading."""
+    charging = battery.get("charging", [])
+    bits = sum(1 << index for index, name in enumerate(PARTS) if name in charging)
+    return [now] + [battery.get(name, -1) for name in PARTS] + [bits]
+
+
+def remaining_minutes(samples, part):
+    """Minutes left on one earbud (1 left, 2 right) at the pace it has been
+    draining, or None when the history does not say.
+
+    The stretch is the latest run of samples with the bud reporting, not
+    charging, and never higher than the sample after it. A least-squares line
+    through that stretch gives the rate; levels move in steps of five, so a
+    stretch under half an hour or without one step says nothing."""
+    if not samples:
+        return None
+    bit = 1 << (part - 1)
+    last = samples[-1]
+    if last[part] <= 0 or last[4] & bit:
+        return None
+    points = [(last[0], last[part])]
+    index = len(samples) - 1
+    while index > 0:
+        before, after = samples[index - 1], samples[index]
+        if after[0] - before[0] > SEGMENT_MAX_GAP_SECONDS:
+            break
+        if before[part] < 0 or before[4] & bit or before[part] < after[part]:
+            break
+        if last[0] - before[0] > SEGMENT_WINDOW_SECONDS:
+            break
+        points.append((before[0], before[part]))
+        index -= 1
+    points.reverse()
+    span = points[-1][0] - points[0][0]
+    drop = points[0][1] - points[-1][1]
+    if span < MIN_SPAN_SECONDS or drop < MIN_DROP_PERCENT:
+        return None
+    count = len(points)
+    mean_t = sum(t for t, _ in points) / count
+    mean_l = sum(l for _, l in points) / count
+    variance = sum((t - mean_t) ** 2 for t, _ in points)
+    if variance <= 0:
+        return None
+    slope = sum((t - mean_t) * (l - mean_l) for t, l in points) / variance
+    if slope >= 0:
+        return None
+    minutes = points[-1][1] / (-slope * 60)
+    if minutes <= 0 or minutes > MAX_ESTIMATE_MINUTES:
+        return None
+    return int(round(minutes / ESTIMATE_STEP_MINUTES)) * ESTIMATE_STEP_MINUTES
+
+
+def estimates_from(samples):
+    out = {}
+    for part, name in ((1, "left"), (2, "right")):
+        minutes = remaining_minutes(samples, part)
+        if minutes is not None:
+            out[name] = minutes
+    return out
+
+
+def history_path():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "omaphones", "redmi-battery.json")
+
+
+def load_history(path, address, now):
+    try:
+        with open(path) as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict) or str(data.get("address", "")).upper() != address.upper():
+        return []
+    out = []
+    for row in data.get("samples", []):
+        if (isinstance(row, list) and len(row) == 5
+                and all(isinstance(v, (int, float)) for v in row)
+                and now - row[0] <= HISTORY_KEEP_SECONDS and row[0] <= now + 60):
+            out.append([float(row[0])] + [int(v) for v in row[1:]])
+    return out[-HISTORY_MAX_SAMPLES:]
+
+
+def save_history(path, address, samples):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        temporary = path + ".tmp"
+        with open(temporary, "w") as handle:
+            json.dump({"address": address.upper(),
+                       "samples": samples[-HISTORY_MAX_SAMPLES:]}, handle,
+                      separators=(",", ":"))
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
+class Bridge:
+    def __init__(self, bus, address, loop, history_file=None, clock=time.time):
+        self.bus = bus
+        self.address = address
+        self.loop = loop
+        self.exit_code = None
+        self.device = None
+        self.manager = None
+        self.registered = False
+        self.fd = None
+        self.watch = None
+        self.buffer = bytearray()
+        self.pending = ""
+        self.sn = 0
+        self.answered = False
+        self.grace_over = False
+        self.last_line = None
+        self.mode = None
+        self.levels = {}
+        self.battery = None
+        self.estimate = {}
+        self.clock = clock
+        self.history_file = history_file
+        self.samples = (load_history(history_file, address, clock())
+                        if history_file else [])
+        self.estimate = estimates_from(self.samples) if self.samples else {}
+
+    def finish(self, code, message=None):
+        if self.exit_code is not None:
+            return False
+        self.exit_code = code
+        if message:
+            emit({"modes": False, "error": message})
+        self.loop.quit()
+        return False
+
+    def unregister(self):
+        if self.watch is not None:
+            try:
+                GLib.source_remove(self.watch)
+            except Exception:
+                pass
+            self.watch = None
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+        if self.manager is not None and self.registered:
+            try:
+                self.manager.UnregisterProfile(PROFILE_PATH, timeout=REPLY_TIMEOUT)
+            except dbus.DBusException:
+                pass
+            self.registered = False
+
+    def register(self):
+        try:
+            device_path = find_device_path(self.bus, self.address)
+        except dbus.DBusException as error:
+            return self.finish(EXIT_TRANSIENT,
+                               "cannot reach BlueZ: %s" % error.get_dbus_message())
+        if not device_path:
+            return self.finish(EXIT_TRANSIENT,
+                               "no paired device with address %s" % self.address)
+        self.device = dbus.Interface(
+            self.bus.get_object("org.bluez", device_path), "org.bluez.Device1")
+        self.manager = dbus.Interface(
+            self.bus.get_object("org.bluez", "/org/bluez"), "org.bluez.ProfileManager1")
+        try:
+            self.manager.RegisterProfile(PROFILE_PATH, UUID, {
+                "Name": "Omaphones Redmi",
+                "Role": "client",
+                "Channel": dbus.UInt16(0),
+                "RequireAuthentication": dbus.Boolean(False),
+                "RequireAuthorization": dbus.Boolean(False),
+                "AutoConnect": dbus.Boolean(False),
+            }, timeout=REPLY_TIMEOUT)
+        except dbus.DBusException as error:
+            return self.finish(EXIT_TRANSIENT,
+                               "cannot register the Redmi profile: %s"
+                               % error.get_dbus_message())
+        self.registered = True
+        GLib.timeout_add(CONNECT_DELAY, self.connect)
+        return False
+
+    def connect(self):
+        if self.exit_code is not None or self.fd is not None:
+            return False
+
+        def failed(error):
+            if self.exit_code is not None or self.fd is not None:
+                return
+            self.finish(EXIT_TRANSIENT, "cannot open the Redmi channel: %s"
+                        % error.get_dbus_message())
+
+        try:
+            self.device.ConnectProfile(UUID, reply_handler=lambda: None,
+                                       error_handler=failed, timeout=CONNECT_TIMEOUT)
+        except dbus.DBusException as error:
+            failed(error)
+        return False
+
+    def opened(self, fd):
+        if self.fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            return
+        self.fd = fd
+        self.watch = GLib.io_add_watch(fd, GLib.PRIORITY_DEFAULT,
+                                       GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR,
+                                       self.on_io)
+        self.ask()
+        GLib.timeout_add(FIRST_ANSWER_MS, self.first_answer_timeout)
+        GLib.timeout_add(MODE_GRACE_MS, self.grace_timeout)
+        GLib.timeout_add(POLL_MS, self.poll)
+
+    def next_sn(self):
+        self.sn = (self.sn + 1) & 0xFF
+        return self.sn
+
+    def ask(self):
+        self.write(encode_get_noise(self.next_sn()))
+        self.write(encode_get_target_info(self.next_sn()))
+
+    def poll(self):
+        if self.exit_code is not None or self.fd is None:
+            return False
+        self.ask()
+        return True
+
+    def recheck(self):
+        if self.exit_code is None and self.fd is not None:
+            self.write(encode_get_noise(self.next_sn()))
+        return False
+
+    def first_answer_timeout(self):
+        # Linked, asked, and nothing came back: the channel is served but not
+        # this part of it, so the address is parked, exit code 3.
+        if self.exit_code is None and not self.answered:
+            self.finish(EXIT_UNSUPPORTED, "the Redmi Buds did not answer")
+        return False
+
+    def grace_timeout(self):
+        # The mode had its chance to arrive with the battery; if it has not,
+        # the battery goes out alone rather than not at all.
+        self.grace_over = True
+        self.publish()
+        return False
+
+    def write(self, frame):
+        if self.fd is None:
+            return
+        try:
+            written = 0
+            while written < len(frame):
+                written += os.write(self.fd, frame[written:])
+        except OSError as error:
+            self.finish(EXIT_TRANSIENT, "the Redmi channel closed: %s" % error)
+
+    def record(self, battery):
+        now = self.clock()
+        sample = sample_of(now, battery)
+        last = self.samples[-1] if self.samples else None
+        if (last is None or last[1:] != sample[1:]
+                or now - last[0] >= SAMPLE_EVERY_SECONDS):
+            self.samples.append(sample)
+            del self.samples[:-HISTORY_MAX_SAMPLES]
+            if self.history_file:
+                save_history(self.history_file, self.address, self.samples)
+        self.estimate = estimates_from(self.samples)
+
+    def publish(self):
+        if self.mode is None and self.battery is None:
+            return
+        if self.mode is None and not self.grace_over:
+            return
+        line = {"modes": True, "available": AVAILABLE if self.mode else []}
+        if self.mode:
+            line["mode"] = self.mode
+        if self.battery:
+            line["battery"] = self.battery
+            if self.estimate:
+                line["estimate"] = dict(self.estimate)
+        if line != self.last_line:
+            self.last_line = line
+            emit(line)
+
+    def on_frame(self, frame):
+        noise = noise_of(frame)
+        if noise is not None:
+            state, level = noise
+            self.answered = True
+            self.mode = MODE_FROM_STATE[state]
+            self.levels[state] = level
+            self.publish()
+            return
+        battery = battery_of(frame)
+        if battery is not None:
+            self.answered = True
+            self.battery = battery
+            self.record(battery)
+            self.publish()
+
+    def command(self, line):
+        parts = line.strip().split()
+        if len(parts) != 2 or parts[0] != "set" or parts[1] not in STATE_FROM_MODE:
+            return
+        # Nothing is sent before the earbuds have said what they are set to.
+        if self.mode is None:
+            return
+        state = STATE_FROM_MODE[parts[1]]
+        self.write(encode_set_noise(self.next_sn(), state, self.levels.get(state, 0)))
+        GLib.timeout_add(RECHECK_MS, self.recheck)
+
+    def parse_buffer(self):
+        while True:
+            frame, self.buffer = split_frame(self.buffer)
+            if frame is None:
+                return
+            self.on_frame(frame)
+            if self.exit_code is not None:
+                return
+
+    def on_io(self, _fd, condition):
+        if condition & (GLib.IO_HUP | GLib.IO_ERR):
+            self.finish(EXIT_TRANSIENT, "the Redmi channel closed")
+            return False
+        try:
+            data = os.read(self.fd, 4096)
+        except OSError as error:
+            self.finish(EXIT_TRANSIENT, "the Redmi channel closed: %s" % error)
+            return False
+        if not data:
+            self.finish(EXIT_TRANSIENT, "the Redmi channel closed")
+            return False
+        self.buffer += data
+        self.parse_buffer()
+        return self.exit_code is None
+
+    def listen_to_stdin(self):
+        GLib.io_add_watch(0, GLib.PRIORITY_DEFAULT,
+                          GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.on_stdin)
+
+    def on_stdin(self, _fd, condition):
+        if condition & (GLib.IO_HUP | GLib.IO_ERR):
+            self.finish(0)
+            return False
+        try:
+            chunk = os.read(0, 4096)
+        except OSError:
+            self.finish(0)
+            return False
+        if not chunk:
+            self.finish(0)
+            return False
+        self.pending += chunk.decode("utf-8", "replace")
+        while "\n" in self.pending:
+            line, self.pending = self.pending.split("\n", 1)
+            self.command(line)
+        return True
+
+
+def find_device_path(bus, address):
+    wanted = address.upper()
+    objects = dbus.Interface(bus.get_object("org.bluez", "/"),
+                             "org.freedesktop.DBus.ObjectManager").GetManagedObjects()
+    for path, interfaces in objects.items():
+        device = interfaces.get("org.bluez.Device1")
+        if device and str(device.get("Address", "")).upper() == wanted:
+            return str(path)
+    return None
+
+
+def main():
+    argv = sys.argv[1:]
+    address = argv[0].strip() if argv else ""
+    if argv and argv[0] in ("-h", "--help"):
+        print("usage: redmi-bridge <classic-address>")
+        return 0
+    if not argv or not ADDRESS.match(address):
+        emit({"modes": False,
+              "error": "usage: redmi-bridge <classic-address> "
+                       "(not a Bluetooth address: %r)" % address})
+        sys.exit(EXIT_SETUP)
+
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    try:
+        bus = dbus.SystemBus()
+    except dbus.DBusException as error:
+        emit({"modes": False, "error": "no system bus: %s" % error.get_dbus_message()})
+        sys.exit(EXIT_TRANSIENT)
+
+    loop = GLib.MainLoop()
+    bridge = Bridge(bus, address, loop, history_file=history_path())
+
+    class Profile(dbus.service.Object):
+        @dbus.service.method("org.bluez.Profile1", in_signature="", out_signature="")
+        def Release(self):
+            bridge.finish(EXIT_TRANSIENT, "BlueZ released the Redmi profile")
+
+        @dbus.service.method("org.bluez.Profile1", in_signature="oha{sv}",
+                             out_signature="")
+        def NewConnection(self, path, fd, properties):
+            bridge.opened(fd.take())
+
+        @dbus.service.method("org.bluez.Profile1", in_signature="o", out_signature="")
+        def RequestDisconnection(self, path):
+            bridge.finish(EXIT_TRANSIENT, "the Redmi channel closed")
+
+    Profile(bus, PROFILE_PATH)
+    bridge.listen_to_stdin()
+    bridge.register()
+
+    def stop(*_args):
+        bridge.finish(0)
+        return False
+
+    unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, stop)
+    unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, stop)
+
+    try:
+        if bridge.exit_code is None:
+            loop.run()
+    finally:
+        bridge.unregister()
+    sys.exit(bridge.exit_code or 0)
+
+
+if __name__ == "__main__":
+    arm_parent_death_signal()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        pass
+    except BaseException as error:
+        emit({"modes": False, "error": "%s: %s" % (type(error).__name__, error)})
+        sys.exit(EXIT_TRANSIENT)

@@ -1,0 +1,100 @@
+{
+  "model": "Redmi Buds 5",
+  "owner": "q",
+  "bridge": "redmi-bridge",
+  "capture": "docs/captures/redmi-buds-5.txt",
+  "notes": "Battery and noise control, on the Xiaomi RCSP service 0000fd2d. The Fast Pair Message Stream answers with a model id and no battery frame. Two reads open the session (GetDeviceConfig 11, GetTargetInfo); the battery is attribute 7 (left 75, right 80, case 100, confirmed against the Xiaomi Earbuds app) and config 11 is state, level with state 0 off, 1 cancelling, 2 transparency. A set writes config 11 and the earbuds announce the new state on their own. Nothing is printed until the mode and the battery are both known.",
+  "session": {},
+  "steps": [
+    {
+      "call": "open",
+      "note": "the channel is up: ask for the mode, then the battery"
+    },
+    {
+      "sent": [
+        "fe dc ba c0 f3 00 03 01 00 0b ef",
+        "fe dc ba c0 02 00 05 02 ff ff ff ff ef"
+      ]
+    },
+    {
+      "device": "fe dc ba 00 02 00 2c 00 01 05 01 10 38 10 38 05 03 27 17 50 6a 02 04 01 02 05 00 03 06 10 38 04 07 4b 50 64 02 08 02 02 09 00 02 0c 00 02 0d 02 02 0e 00 ef",
+      "note": "the battery answer comes first: nothing is printed until the mode is known"
+    },
+    {
+      "lines": []
+    },
+    {
+      "device": "fe dc ba 00 f3 00 07 00 01 04 00 0b 02 00 ef",
+      "note": "transparency, as the earbuds were set"
+    },
+    {
+      "line": {
+        "modes": true,
+        "available": [
+          "off",
+          "anc",
+          "ambient"
+        ],
+        "mode": "ambient",
+        "battery": {
+          "left": 75,
+          "right": 80,
+          "case": 100,
+          "charging": []
+        }
+      }
+    },
+    {
+      "command": "set anc"
+    },
+    {
+      "sent_last": "fe dc ba c0 f2 00 06 03 04 00 0b 01 00 ef"
+    },
+    {
+      "line_count": 1,
+      "note": "the bridge does not print the mode on the strength of having asked"
+    },
+    {
+      "device": "fe dc ba c7 f4 00 06 05 04 00 0b 01 00 ef",
+      "note": "the earbuds' own announcement"
+    },
+    {
+      "line": {
+        "modes": true,
+        "available": [
+          "off",
+          "anc",
+          "ambient"
+        ],
+        "mode": "anc",
+        "battery": {
+          "left": 75,
+          "right": 80,
+          "case": 100,
+          "charging": []
+        }
+      }
+    },
+    {
+      "command": "set off"
+    },
+    {
+      "sent_last": "fe dc ba c0 f2 00 06 04 04 00 0b 00 00 ef"
+    },
+    {
+      "device": "fe dc ba c7 f4 00 06 07 04 00 0b 00 00 ef"
+    },
+    {
+      "line_has": {
+        "mode": "off"
+      }
+    },
+    {
+      "command": "set talkthru",
+      "note": "a mode these earbuds do not have is ignored"
+    },
+    {
+      "line_count": 3
+    }
+  ]
+}

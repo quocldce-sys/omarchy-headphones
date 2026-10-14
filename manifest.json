@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.ncr.omaphones",
   "name": "Omaphones",
-  "version": "1.3.13",
+  "version": "1.3.13-redmi.1",
   "author": "Jacek Becela",
   "license": "MIT",
-  "description": "Battery levels and noise-cancellation control for Bluetooth headphones, in the Omarchy bar. JBL, Sony, Samsung, Nothing / CMF, Soundcore, Xiaomi, OPPO, Bose, TOZO, Huawei; battery on anything with Google Fast Pair or BlueZ.",
+  "description": "Battery levels and noise-cancellation control for Bluetooth headphones, in the Omarchy bar. JBL, Sony, Samsung, Nothing / CMF, Soundcore, Xiaomi, Redmi Buds 5, OPPO, Bose, TOZO, Huawei; battery on anything with Google Fast Pair or BlueZ.",
   "kinds": [
     "service",
     "bar-widget"
@@ -27,6 +27,7 @@
       "cmf",
       "soundcore",
       "xiaomi",
+      "redmi",
       "oppo",
       "bose",
       "qc45",
