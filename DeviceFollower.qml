@@ -117,6 +117,13 @@ Item {
     : (bridgeBattery && Model.bridgeCharging(ancState, "right"))
   readonly property bool caseCharging: streaming ? reading.caseCharging === true
     : (bridgeBattery && Model.bridgeCharging(ancState, "case"))
+  // Minutes of listening left on a bud, as the bridge works it out from the
+  // history of its battery. Only while the bud is draining, and only from the
+  // bridge: the Fast Pair stream gives no such thing.
+  readonly property int leftEstimate: bridgeBattery && !leftCharging
+    ? Model.bridgeEstimate(ancState, "left") : -1
+  readonly property int rightEstimate: bridgeBattery && !rightCharging
+    ? Model.bridgeEstimate(ancState, "right") : -1
   readonly property bool perBud: leftLevel >= 0 || rightLevel >= 0
   // The case only reports while it is open. The Nothing bridge keeps its last
   // reading and says so; the panel dims that row rather than dropping it.

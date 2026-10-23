@@ -47,6 +47,7 @@ device changed on its own. Flush after every line. Keys:
 | `ancLevels` | list | the strengths this device grades in, from the four above, weakest first |
 | `latency` | bool | the low-latency switch (Nothing). Only after the device has answered for it |
 | `battery` | object | `{"left", "right", "case", "headset"}` 0-100 for the parts the device reports, `"charging": [names]`, `"caseStale": bool` when the case reading is the last one seen rather than a live one. A fallback for a device with no Fast Pair stream |
+| `estimate` | object | `{"left": 410, "right": 395}` minutes of listening left on a bud, from the bridge's own history of that battery; only the buds, only while draining, only when there is enough history to say. Not carried from one line to the next: a figure the bridge stopped giving is one it no longer stands behind. The Redmi bridge sends it |
 
 Keys a line omits keep their last value in the shell (`applyAncLine` in
 `DeviceFollower.qml` carries `available`, `level`, `voice`, `worn`, `ancLevel`,

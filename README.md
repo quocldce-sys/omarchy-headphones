@@ -147,6 +147,11 @@ Headphones not on the list? [Add yours](#add-your-own-headphones).
 
 - **Battery level** — per earbud and the case, or the single battery of
   over-ear headphones.
+- **Time left** — on earbuds whose bridge keeps a history of their battery
+  (the Redmi Buds 5 today), an estimate beside each bud's percentage, such as
+  `65%  ·  ~4h 20m`. It is learned from how this pair's own battery has been
+  going down, not taken from a datasheet, and shows once there is half an hour
+  of it to go on.
 - **The bar icon is the meter** — earbuds are drawn as a pair, a headset as
   headphones, filling up as they charge. Readable from the bar without opening
   anything.

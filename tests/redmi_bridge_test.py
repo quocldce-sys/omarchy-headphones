@@ -17,6 +17,9 @@ emit() and the file descriptor callbacks, and all of them are captured.
 import contextlib
 import errno
 import io
+import json
+import os
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -503,6 +506,147 @@ class Silent(unittest.TestCase):
         s.device(NOISE_AMBIENT.hex(" "))
         s.bridge.first_answer_timeout()
         self.assertIsNone(s.bridge.exit_code)
+
+
+def sample(minute, left, right, case=100, bits=0):
+    return [minute * 60.0, left, right, case, bits]
+
+
+class Estimate(unittest.TestCase):
+    def test_a_steady_drain_gives_the_time_left(self):
+        # Left loses five points every 30 minutes: 10 points an hour, so at 60
+        # it has six hours. Right is slower, so it has longer.
+        samples = [sample(0, 75, 95), sample(30, 70, 95), sample(60, 65, 90),
+                   sample(90, 60, 90)]
+        self.assertEqual(bridge.remaining_minutes(samples, 1), 360)
+        self.assertGreater(bridge.remaining_minutes(samples, 2), 360)
+
+    def test_too_little_history_says_nothing(self):
+        self.assertIsNone(bridge.remaining_minutes([sample(0, 75, 80)], 1))
+        self.assertIsNone(bridge.remaining_minutes(
+            [sample(0, 75, 80), sample(20, 70, 80)], 1))  # under half an hour
+        self.assertIsNone(bridge.remaining_minutes(
+            [sample(0, 75, 80), sample(40, 75, 80)], 1))  # no step yet
+
+    def test_a_flat_stretch_after_the_last_step_pulls_the_rate_down(self):
+        steady = [sample(0, 80, 80), sample(30, 75, 80), sample(60, 70, 80)]
+        later = steady + [sample(80, 70, 80), sample(100, 70, 80)]
+        self.assertLess(bridge.remaining_minutes(steady, 1) or 10**9,
+                        bridge.remaining_minutes(later, 1))
+
+    def test_charging_breaks_the_stretch(self):
+        samples = [sample(0, 50, 80), sample(30, 55, 80, bits=1),
+                   sample(60, 70, 80, bits=1), sample(90, 70, 80),
+                   sample(120, 65, 80)]
+        # Only the last two samples are discharging: under half an hour... no,
+        # an hour of it would be needed, and there is 30 minutes and one step.
+        self.assertEqual(bridge.remaining_minutes(samples, 1), 390)
+
+    def test_a_bud_that_is_charging_now_has_no_estimate(self):
+        samples = [sample(0, 75, 80), sample(30, 70, 80), sample(60, 70, 80, bits=1)]
+        self.assertIsNone(bridge.remaining_minutes(samples, 1))
+
+    def test_a_gap_in_the_history_breaks_the_stretch(self):
+        # Hours with nothing recorded between 30 and 300: the pair was away,
+        # and what it did meanwhile is not a rate. What follows is 15 minutes.
+        samples = [sample(0, 90, 90), sample(30, 85, 90), sample(300, 60, 90),
+                   sample(315, 55, 90)]
+        self.assertIsNone(bridge.remaining_minutes(samples, 1))
+
+    def test_a_bud_that_stops_reporting_breaks_the_stretch(self):
+        samples = [sample(0, 90, 90), sample(30, 85, 90), sample(60, -1, 90),
+                   sample(75, 80, 90), sample(90, 75, 90)]
+        self.assertIsNone(bridge.remaining_minutes(samples, 1))
+
+    def test_a_level_that_rose_is_a_charge_not_a_drain(self):
+        samples = [sample(0, 60, 90), sample(30, 70, 90), sample(60, 65, 90),
+                   sample(90, 60, 90)]
+        self.assertEqual(bridge.remaining_minutes(samples, 1), 360)
+
+    def test_only_the_recent_hours_count(self):
+        # Slow for the first stretch, then quick for the last few hours.
+        samples = [sample(m, 100 - m // 20, 90) for m in range(0, 300, 30)]
+        quick = [sample(300 + m, 87 - m // 6, 90) for m in range(0, 180, 30)]
+        slow_only = bridge.remaining_minutes(samples, 1)
+        both = bridge.remaining_minutes(samples + quick, 1)
+        self.assertLess(both, slow_only)
+
+    def test_an_absurdly_long_estimate_is_not_offered(self):
+        samples = [sample(0, 100, 100), sample(1000, 95, 100)]
+        self.assertIsNone(bridge.remaining_minutes(samples, 1))
+
+    def test_estimates_come_for_the_buds_and_not_the_case(self):
+        samples = [sample(0, 75, 95), sample(30, 70, 92), sample(60, 65, 90)]
+        self.assertEqual(set(bridge.estimates_from(samples)), {"left", "right"})
+
+
+class History(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = os.path.join(self.dir.name, "omaphones", "redmi-battery.json")
+        self.now = [1000.0]
+
+    def bridge(self):
+        s = Session.__new__(Session)
+        harness.Session.__init__(s, bridge)
+        s.bridge = bridge.Bridge(None, ADDRESS, harness.FakeLoop(),
+                                 history_file=self.path, clock=lambda: self.now[0])
+        s.bridge.write = s.frames.append
+        return s
+
+    def test_a_change_is_recorded_and_saved(self):
+        s = self.bridge()
+        s.device(ANSWER.hex(" "))
+        with open(self.path) as handle:
+            data = json.load(handle)
+        self.assertEqual(data["address"], ADDRESS)
+        self.assertEqual(data["samples"], [[1000.0, 75, 80, 100, 0]])
+
+    def test_an_unchanged_reading_is_not_recorded_again_until_it_is_time(self):
+        s = self.bridge()
+        s.device(ANSWER.hex(" "))
+        self.now[0] += 60
+        s.device(ANSWER.hex(" "))
+        self.assertEqual(len(s.bridge.samples), 1)
+        self.now[0] += bridge.SAMPLE_EVERY_SECONDS
+        s.device(ANSWER.hex(" "))
+        self.assertEqual(len(s.bridge.samples), 2)
+
+    def test_history_survives_a_restart_and_gives_an_estimate_at_once(self):
+        s = self.bridge()
+        for minutes, level in ((0, 80), (30, 75), (60, 70)):
+            self.now[0] = 1000.0 + minutes * 60
+            frame = bytearray(ANSWER)
+            frame[frame.index(b"\x04\x07") + 2] = level
+            s.device(bytes(frame).hex(" "))
+        s.bridge.grace_timeout()
+        self.assertEqual(s.lines[-1]["estimate"]["left"], 420)
+        again = self.bridge()
+        self.assertEqual(again.bridge.estimate["left"], 420)
+
+    def test_another_pairs_history_is_not_read(self):
+        s = self.bridge()
+        s.device(ANSWER.hex(" "))
+        other = bridge.load_history(self.path, "00:11:22:33:44:55", 1000.0)
+        self.assertEqual(other, [])
+
+    def test_old_and_damaged_history_is_dropped(self):
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, "w") as handle:
+            json.dump({"address": ADDRESS, "samples": [
+                [1.0, 50, 50, 50, 0], "junk", [1000.0, 70, 70, 100],
+                [900.0, 70, 71, 100, 0]]}, handle)
+        self.assertEqual(bridge.load_history(self.path, ADDRESS, 1000.0 + 8 * 24 * 3600),
+                         [])
+        self.assertEqual(bridge.load_history(self.path, ADDRESS, 1000.0),
+                         [[1.0, 50, 50, 50, 0], [900.0, 70, 71, 100, 0]])
+
+    def test_an_unreadable_file_is_an_empty_history(self):
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, "w") as handle:
+            handle.write("{not json")
+        self.assertEqual(bridge.load_history(self.path, ADDRESS, 1000.0), [])
 
 
 if __name__ == "__main__":

@@ -783,6 +783,35 @@ function bridgeCharging(state, key) {
   return Array.isArray(list) && list.indexOf(key) !== -1
 }
 
+// ---- How long a bud should last, in minutes, from a bridge that works it out
+//      from the history of its battery (the Redmi one does):
+//
+//        {"estimate": {"left": 410, "right": 395}}
+//
+//      Not carried from one line to the next, unlike the levels: a figure the
+//      bridge stopped giving is one it no longer stands behind. -1 for a bud
+//      with none, and for anything that is not a whole number of minutes in
+//      range.
+function bridgeEstimate(state, key) {
+  var estimate = state ? state.estimate : undefined
+  if (!estimate || typeof estimate !== "object" || Array.isArray(estimate)) return -1
+  var value = estimate[key]
+  if (typeof value !== "number" || !isFinite(value)) return -1
+  if (value <= 0 || value > 2880) return -1
+  return Math.round(value)
+}
+
+// "~6h 20m", "~45m": an estimate, so it says so, and in steps of five minutes
+// because it is no better than that. "" for no figure.
+function durationLabel(minutes) {
+  if (typeof minutes !== "number" || !isFinite(minutes) || minutes <= 0) return ""
+  var rounded = Math.max(5, Math.round(minutes / 5) * 5)
+  var hours = Math.floor(rounded / 60)
+  var rest = rounded % 60
+  if (hours === 0) return "~" + rest + "m"
+  return "~" + hours + "h" + (rest === 0 ? "" : " " + rest + "m")
+}
+
 function bridgeCaseStale(state) {
   var battery = state ? state.battery : undefined
   return !!battery && typeof battery === "object" && battery.caseStale === true

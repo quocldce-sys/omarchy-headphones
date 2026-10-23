@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Hold one 0xFD2D RFCOMM link to Redmi Buds 5: battery and noise control.
+"""Hold one 0xFD2D RFCOMM link to Redmi Buds 5: battery, noise control, and how
+long the battery should last.
 
     redmi-bridge <classic-address>
 
@@ -8,9 +9,15 @@ Prints one JSON object per line, and reads one command per line:
     stdout   {"modes": true, "mode": "anc",
               "available": ["off","anc","ambient"],
               "battery": {"left": 75, "right": 80, "case": 100,
-                          "charging": []}}
+                          "charging": []},
+              "estimate": {"left": 410, "right": 395}}
              {"modes": false, "error": "..."}
     stdin    set off | set anc | set ambient
+
+`estimate` is minutes of listening left on each earbud at the rate this pair
+has been using its battery, learned from the history the bridge keeps in
+$XDG_STATE_HOME/omaphones/redmi-battery.json. It is absent until there is
+enough to go on, and never a figure from a datasheet.
 
 Exit codes are BRIDGE.md's: 0 clean stop, 1 transient (the channel never
 opened, or closed under us; also refused, since the earbuds may serve the
@@ -55,6 +62,7 @@ import os
 import re
 import signal
 import sys
+import time
 
 try:
     import dbus
@@ -108,6 +116,22 @@ MODE_GRACE_MS = 2000
 POLL_MS = 30000
 RECHECK_MS = 800
 MAX_BODY = 1024
+
+# How long the battery should last, from the history this pair has left.
+# Levels come in steps of five, so a rate needs a stretch long enough to cross
+# at least one step; a stretch is broken by a gap, a charge, or a bud that
+# stopped reporting, and only the recent part of it counts, so the figure
+# follows how the earbuds are being used now.
+HISTORY_KEEP_SECONDS = 7 * 24 * 3600
+HISTORY_MAX_SAMPLES = 3000
+SAMPLE_EVERY_SECONDS = 600
+SEGMENT_MAX_GAP_SECONDS = 1800
+SEGMENT_WINDOW_SECONDS = 3 * 3600
+MIN_SPAN_SECONDS = 1800
+MIN_DROP_PERCENT = 5
+MAX_ESTIMATE_MINUTES = 48 * 60
+ESTIMATE_STEP_MINUTES = 5
+
 
 def emit(payload):
     try:
@@ -263,8 +287,107 @@ def noise_of(frame):
     return value[0], value[1]
 
 
+# ---- How long the battery should last
+
+def sample_of(now, battery):
+    """[time, left, right, case, charging bits], -1 for a part with no reading."""
+    charging = battery.get("charging", [])
+    bits = sum(1 << index for index, name in enumerate(PARTS) if name in charging)
+    return [now] + [battery.get(name, -1) for name in PARTS] + [bits]
+
+
+def remaining_minutes(samples, part):
+    """Minutes left on one earbud (1 left, 2 right) at the pace it has been
+    draining, or None when the history does not say.
+
+    The stretch is the latest run of samples with the bud reporting, not
+    charging, and never higher than the sample after it. A least-squares line
+    through that stretch gives the rate; levels move in steps of five, so a
+    stretch under half an hour or without one step says nothing."""
+    if not samples:
+        return None
+    bit = 1 << (part - 1)
+    last = samples[-1]
+    if last[part] <= 0 or last[4] & bit:
+        return None
+    points = [(last[0], last[part])]
+    index = len(samples) - 1
+    while index > 0:
+        before, after = samples[index - 1], samples[index]
+        if after[0] - before[0] > SEGMENT_MAX_GAP_SECONDS:
+            break
+        if before[part] < 0 or before[4] & bit or before[part] < after[part]:
+            break
+        if last[0] - before[0] > SEGMENT_WINDOW_SECONDS:
+            break
+        points.append((before[0], before[part]))
+        index -= 1
+    points.reverse()
+    span = points[-1][0] - points[0][0]
+    drop = points[0][1] - points[-1][1]
+    if span < MIN_SPAN_SECONDS or drop < MIN_DROP_PERCENT:
+        return None
+    count = len(points)
+    mean_t = sum(t for t, _ in points) / count
+    mean_l = sum(l for _, l in points) / count
+    variance = sum((t - mean_t) ** 2 for t, _ in points)
+    if variance <= 0:
+        return None
+    slope = sum((t - mean_t) * (l - mean_l) for t, l in points) / variance
+    if slope >= 0:
+        return None
+    minutes = points[-1][1] / (-slope * 60)
+    if minutes <= 0 or minutes > MAX_ESTIMATE_MINUTES:
+        return None
+    return int(round(minutes / ESTIMATE_STEP_MINUTES)) * ESTIMATE_STEP_MINUTES
+
+
+def estimates_from(samples):
+    out = {}
+    for part, name in ((1, "left"), (2, "right")):
+        minutes = remaining_minutes(samples, part)
+        if minutes is not None:
+            out[name] = minutes
+    return out
+
+
+def history_path():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "omaphones", "redmi-battery.json")
+
+
+def load_history(path, address, now):
+    try:
+        with open(path) as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict) or str(data.get("address", "")).upper() != address.upper():
+        return []
+    out = []
+    for row in data.get("samples", []):
+        if (isinstance(row, list) and len(row) == 5
+                and all(isinstance(v, (int, float)) for v in row)
+                and now - row[0] <= HISTORY_KEEP_SECONDS and row[0] <= now + 60):
+            out.append([float(row[0])] + [int(v) for v in row[1:]])
+    return out[-HISTORY_MAX_SAMPLES:]
+
+
+def save_history(path, address, samples):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        temporary = path + ".tmp"
+        with open(temporary, "w") as handle:
+            json.dump({"address": address.upper(),
+                       "samples": samples[-HISTORY_MAX_SAMPLES:]}, handle,
+                      separators=(",", ":"))
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
 class Bridge:
-    def __init__(self, bus, address, loop):
+    def __init__(self, bus, address, loop, history_file=None, clock=time.time):
         self.bus = bus
         self.address = address
         self.loop = loop
@@ -283,6 +406,12 @@ class Bridge:
         self.mode = None
         self.levels = {}
         self.battery = None
+        self.estimate = {}
+        self.clock = clock
+        self.history_file = history_file
+        self.samples = (load_history(history_file, address, clock())
+                        if history_file else [])
+        self.estimate = estimates_from(self.samples) if self.samples else {}
 
     def finish(self, code, message=None):
         if self.exit_code is not None:
@@ -421,6 +550,18 @@ class Bridge:
         except OSError as error:
             self.finish(EXIT_TRANSIENT, "the Redmi channel closed: %s" % error)
 
+    def record(self, battery):
+        now = self.clock()
+        sample = sample_of(now, battery)
+        last = self.samples[-1] if self.samples else None
+        if (last is None or last[1:] != sample[1:]
+                or now - last[0] >= SAMPLE_EVERY_SECONDS):
+            self.samples.append(sample)
+            del self.samples[:-HISTORY_MAX_SAMPLES]
+            if self.history_file:
+                save_history(self.history_file, self.address, self.samples)
+        self.estimate = estimates_from(self.samples)
+
     def publish(self):
         if self.mode is None and self.battery is None:
             return
@@ -431,6 +572,8 @@ class Bridge:
             line["mode"] = self.mode
         if self.battery:
             line["battery"] = self.battery
+            if self.estimate:
+                line["estimate"] = dict(self.estimate)
         if line != self.last_line:
             self.last_line = line
             emit(line)
@@ -448,6 +591,7 @@ class Bridge:
         if battery is not None:
             self.answered = True
             self.battery = battery
+            self.record(battery)
             self.publish()
 
     def command(self, line):
@@ -542,7 +686,7 @@ def main():
         sys.exit(EXIT_TRANSIENT)
 
     loop = GLib.MainLoop()
-    bridge = Bridge(bus, address, loop)
+    bridge = Bridge(bus, address, loop, history_file=history_path())
 
     class Profile(dbus.service.Object):
         @dbus.service.method("org.bluez.Profile1", in_signature="", out_signature="")

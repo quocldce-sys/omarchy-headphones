@@ -1272,3 +1272,29 @@ Deno.test("a reader level above 100 is not a level", () => {
   assertEquals(Model.readerLevel({ battery: 0 }, "battery"), 0);
   assertEquals(Model.readerLevel({ battery: -1 }, "battery"), -1);
 });
+
+Deno.test("a bud's estimate comes from the bridge line and is never carried", () => {
+  assertEquals(Model.bridgeEstimate({ estimate: { left: 410, right: 395 } }, "left"), 410);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: 410, right: 395 } }, "right"), 395);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: 410 } }, "right"), -1);
+  assertEquals(Model.bridgeEstimate({}, "left"), -1);
+  assertEquals(Model.bridgeEstimate(null, "left"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: [410] }, "0"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: "410" } }, "left"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: 0 } }, "left"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: -5 } }, "left"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: 99999 } }, "left"), -1);
+  assertEquals(Model.bridgeEstimate({ estimate: { left: NaN } }, "left"), -1);
+});
+
+Deno.test("a duration reads as an estimate, in steps of five minutes", () => {
+  assertEquals(Model.durationLabel(380), "~6h 20m");
+  assertEquals(Model.durationLabel(360), "~6h");
+  assertEquals(Model.durationLabel(45), "~45m");
+  assertEquals(Model.durationLabel(2), "~5m");
+  assertEquals(Model.durationLabel(119), "~2h");
+  assertEquals(Model.durationLabel(0), "");
+  assertEquals(Model.durationLabel(-3), "");
+  assertEquals(Model.durationLabel(undefined), "");
+  assertEquals(Model.durationLabel(Infinity), "");
+});

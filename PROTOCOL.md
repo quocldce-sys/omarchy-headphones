@@ -1155,6 +1155,27 @@ The panel calls the second mode *Transparency*, as the Xiaomi Earbuds app does
 (`modeLabels` in the `redmi` row). The Fast Pair stream, which is up but empty,
 does not shadow the bridge's battery for this backend.
 
+### Time left
+
+Not something the earbuds report: the bridge works it out. Levels come in steps
+of five, so a rate needs a stretch long enough to cross one.
+
+Every change in the three levels, and at least every 10 minutes, is a sample
+(time, left, right, case, charging bits), kept for 7 days (3000 at most) in
+`$XDG_STATE_HOME/omaphones/redmi-battery.json` under the earbuds' address. For
+one bud the stretch is the latest run of samples in which the bud reports, is
+not charging and is never higher than the sample after it, with no gap over 30
+minutes, and only its last 3 hours. It has to span 30 minutes and fall by at
+least one step. A least-squares line through it gives the rate, and the level
+over the rate is the minutes left, rounded to 5 and dropped above 48 hours. A
+charge, a bud in its case (no reading), or the earbuds away for half an hour
+starts a new stretch; so does anything the earbuds say that is not a level.
+
+It follows the pace the pair has been going at, with cancelling on or off, a
+louder volume or a cold battery, and says nothing about what the earbuds are
+rated for. It is sent as `"estimate": {"left": 410, "right": 395}` in the line
+that carries the battery, and left out when there is nothing to say.
+
 ### The probe
 
 [`tools/redmi_probe.py`](tools/redmi_probe.py):
