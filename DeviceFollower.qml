@@ -421,21 +421,26 @@ Item {
   }
 
   // What this device serves, from its SDP record. Quickshell.Bluetooth exposes
-  // no uuids property, and the list does not change while a device stays
-  // connected, so it is read once per connection with the tool that prints it
-  // rather than watched. One probe at a time, and no need to check whose answer
+  // no uuids property, and the list does not change once a connection has
+  // settled, so it is read with the tool that prints it, for the first few
+  // seconds of a connection, rather than watched. One probe at a time, and no need to check whose answer
   // came back: this follower asks about one address and no other.
   function startUuidProbe() {
     uuidProbeTries = 0
+    uuidProbeLast = -1
     probeUuids()
   }
 
-  // A link that has only just come back (the earbuds out of their case, say) can
-  // answer `bluetoothctl info` with a failure, or with no UUID yet. Read as the
-  // device serving nothing, that routes it to the wrong backend, and the probe
-  // is not asked again until the next connection. So a probe that found nothing
-  // is asked a few more times, three seconds apart, before it is believed.
+  // The list is not complete the moment a link comes up. BlueZ resolves the SDP
+  // record over the first seconds, and a probe made too soon sees part of it, or
+  // none: seen live, 10 UUIDs and then 13 (the 0xFD2D one the Redmi row claims
+  // among the missing) a few seconds later. Read once, that routes the device to
+  // the wrong backend for as long as it stays connected. So it is asked again,
+  // three seconds apart, until two answers in a row agree, six asks at most, and
+  // each answer is used as it comes: a backend the first list could not claim is
+  // claimed by the next.
   property int uuidProbeTries: 0
+  property int uuidProbeLast: -1
   Timer {
     id: uuidProbeRetry
     interval: 3000
@@ -855,17 +860,17 @@ Item {
     stdout: StdioCollector { id: uuidProbeOut; waitForEnd: true }
     onExited: function(exitCode, exitStatus) {
       // A probe that failed says nothing about the device, and an empty list is
-      // exactly that: no Sony or GAIA UUID seen, so a Fast Pair BLE address decides.
+      // exactly that: nothing is taken from it, and the Fast Pair BLE address
+      // decides until a later probe says more.
       var found = exitCode === 0 ? Model.uuidsFromBluetoothctl(uuidProbeOut.text) : []
       console.log("omaphones: uuid probe for " + follower.address + " exited " + exitCode
         + " with " + found.length + " uuids, try " + (follower.uuidProbeTries + 1))
-      if (found.length === 0 && follower.connected && follower.uuidProbeTries < 5) {
-        follower.uuidProbeTries += 1
+      if (found.length > 0) follower.deviceUuids = found
+      var stable = found.length > 0 && found.length === follower.uuidProbeLast
+      follower.uuidProbeLast = found.length
+      follower.uuidProbeTries += 1
+      if (!stable && follower.connected && follower.uuidProbeTries < 6)
         uuidProbeRetry.restart()
-        return
-      }
-      follower.uuidProbeTries = 0
-      follower.deviceUuids = found
     }
   }
 
