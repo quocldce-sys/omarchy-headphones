@@ -1298,3 +1298,16 @@ Deno.test("a duration reads as an estimate, in steps of five minutes", () => {
   assertEquals(Model.durationLabel(undefined), "");
   assertEquals(Model.durationLabel(Infinity), "");
 });
+
+Deno.test("the same earbuds listed on two adapters are the connected one, whichever comes first", () => {
+  const paired = { address: "AA:BB:CC:00:00:01", name: "Redmi Buds 5", connected: false, adapter: "dongle" };
+  const connected = { address: "AA:BB:CC:00:00:01", name: "Redmi Buds 5", connected: true, adapter: "internal" };
+  assertEquals(Model.deviceByAddress([paired, connected], "aa:bb:cc:00:00:01"), connected);
+  assertEquals(Model.deviceByAddress([connected, paired], "AA:BB:CC:00:00:01"), connected);
+  // Neither connected: the first, as before.
+  const other = { address: "AA:BB:CC:00:00:01", connected: false, adapter: "other" };
+  assertEquals(Model.deviceByAddress([paired, other], "AA:BB:CC:00:00:01"), paired);
+  assertEquals(Model.deviceByAddress([paired], "AA:BB:CC:00:00:02"), null);
+  assertEquals(Model.deviceByAddress([], "AA:BB:CC:00:00:01"), null);
+  assertEquals(Model.deviceByAddress([paired], ""), null);
+});
