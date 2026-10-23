@@ -34,10 +34,11 @@ Protocol, as the Redmi Buds 5 answered it, and as the Xiaomi Earbuds app
              a command's body is  <sn> <param>
              a response's body is <status> <sn> <payload>
     battery  ask FE DC BA C0 02 00 05 <sn> FF FF FF FF EF (GetTargetInfo);
-             attribute 7 of the answer, or attribute 0 of the status report
-             (opcode 0x0E) the earbuds send on a change, is one byte each for
-             left, right, case: low seven bits the level, bit 7 charging,
-             0xFF no reading. <length> <type> <value> attributes
+             attribute 7 of the answer, a <length> <type> <value> list, is one
+             byte each for left, right, case: the level in the low seven bits,
+             and bit 7 for charging, 0xFF for no reading. The level was seen;
+             the other two are how the Xiaomi Earbuds app reads the byte, and
+             no earbud was charging or out of range in the capture
     config   a config is <len> <id u16 BE> <value>, len counting the id and
              the value. Config 11 is the noise control: <state> <level>,
              state 0 off, 1 noise cancelling, 2 transparency
@@ -52,7 +53,8 @@ Protocol, as the Redmi Buds 5 answered it, and as the Xiaomi Earbuds app
 
 What is sent: the battery ask, the config 11 get, and, on `set`, one config 11
 set. Nothing else, and no answer to the earbuds' own announcements: none has
-been seen to be needed.
+been seen to be needed. The status report (opcode 0x0E) the earbuds send with
+each announcement is not read: it carried no battery in the capture.
 """
 import ctypes
 import json
@@ -91,12 +93,10 @@ TAIL = 0xEF
 FLAG_COMMAND = 0x80
 FLAG_WANTS_RESPONSE = 0x40
 OP_GET_TARGET_INFO = 0x02
-OP_REPORT_STATUS = 0x0E
 OP_SET_CONFIG = 0xF2
 OP_GET_CONFIG = 0xF3
 OP_NOTIFY_CONFIG = 0xF4
 ATTR_BATTERY_INFO = 7
-ATTR_BATTERY_REPORT = 0
 NO_READING = 0xFF
 PARTS = ("left", "right", "case")
 
@@ -267,17 +267,9 @@ def battery_from(values):
 def battery_of(frame):
     """The battery a frame carries, or None for one that has none to give."""
     is_command, opcode, status, payload = parts_of(frame)
-    if is_command:
-        if opcode != OP_REPORT_STATUS:
-            return None
-        found = attributes(payload)
-        wanted = ATTR_BATTERY_REPORT
-    else:
-        if opcode != OP_GET_TARGET_INFO or status != 0:
-            return None
-        found = attributes(payload)
-        wanted = ATTR_BATTERY_INFO
-    values = found.get(wanted)
+    if is_command or opcode != OP_GET_TARGET_INFO or status != 0:
+        return None
+    values = attributes(payload).get(ATTR_BATTERY_INFO)
     return battery_from(values) if values else None
 
 
@@ -518,6 +510,8 @@ class Bridge:
         return self.sn
 
     def ask(self):
+        if self.exit_code is not None:
+            return
         self.write(encode_get_noise(self.next_sn()))
         self.write(encode_get_target_info(self.next_sn()))
 
@@ -547,7 +541,7 @@ class Bridge:
         return False
 
     def write(self, frame):
-        if self.fd is None:
+        if self.fd is None or self.exit_code is not None:
             return
         try:
             written = 0
@@ -606,6 +600,8 @@ class Bridge:
             return
         # Nothing is sent before the earbuds have said what they are set to.
         if self.mode is None:
+            return
+        if self.exit_code is not None:
             return
         state = STATE_FROM_MODE[parts[1]]
         self.write(encode_set_noise(self.next_sn(), state, self.levels.get(state, 0)))

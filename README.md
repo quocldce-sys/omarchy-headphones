@@ -1,6 +1,6 @@
 # Omaphones for Omarchy
 
-<p align="center"><b>JBL</b> &nbsp;·&nbsp; <b>Sony</b> &nbsp;·&nbsp; <b>Samsung</b> &nbsp;·&nbsp; <b>Nothing / CMF</b> &nbsp;·&nbsp; <b>Soundcore</b> &nbsp;·&nbsp; <b>Xiaomi</b> &nbsp;·&nbsp; <b>OPPO</b> &nbsp;·&nbsp; <b>Bose</b> &nbsp;·&nbsp; <b>TOZO</b> &nbsp;·&nbsp; <b>Huawei</b></p>
+<p align="center"><b>JBL</b> &nbsp;·&nbsp; <b>Sony</b> &nbsp;·&nbsp; <b>Samsung</b> &nbsp;·&nbsp; <b>Nothing / CMF</b> &nbsp;·&nbsp; <b>Soundcore</b> &nbsp;·&nbsp; <b>Xiaomi</b> &nbsp;·&nbsp; <b>OPPO</b> &nbsp;·&nbsp; <b>Bose</b> &nbsp;·&nbsp; <b>TOZO</b> &nbsp;·&nbsp; <b>Huawei</b> &nbsp;·&nbsp; <b>Redmi</b></p>
 
 <p align="center"><b>Battery levels and noise-cancellation control for Bluetooth headphones, in the Omarchy bar.</b></p>
 
@@ -125,6 +125,15 @@ Headphones not on the list? [Add yours](#add-your-own-headphones).
 
 <table>
 <tr>
+<td width="50%"><img src="docs/gallery/redmi-buds-5.png" alt="Redmi Buds 5: left, right and case, Off / ANC / Transparency" width="100%"></td>
+</tr>
+<tr>
+<td align="center">Redmi Buds 5 — <a href="https://github.com/quocldce-sys">@quocldce-sys</a></td>
+</tr>
+</table>
+
+<table>
+<tr>
 <td width="50%"><img src="docs/gallery/huawei-freebuds-se-2.png" alt="HUAWEI FreeBuds SE 2: left, right and case batteries, no mode row" width="100%"></td>
 <td width="50%"></td>
 </tr>
@@ -138,11 +147,16 @@ Headphones not on the list? [Add yours](#add-your-own-headphones).
 
 - **Battery level** — per earbud and the case, or the single battery of
   over-ear headphones.
+- **Time left** — on earbuds whose bridge keeps a history of their battery
+  (the Redmi Buds 5 today), an estimate beside each bud's percentage, such as
+  `65%  ·  ~4h 20m`. It is learned from how this pair's own battery has been
+  going down, not taken from a datasheet, and shows once there is half an hour
+  of it to go on.
 - **The bar icon is the meter** — earbuds are drawn as a pair, a headset as
   headphones, filling up as they charge. Readable from the bar without opening
   anything.
 - **Noise control** — Off / ANC / Ambient / TalkThru, from the panel or a key.
-  JBL, Sony, Samsung, Nothing / CMF, Soundcore, Xiaomi Buds 5 Pro, OPPO Enco Air3 Pro,
+  JBL, Sony, Samsung, Nothing / CMF, Soundcore, Xiaomi Buds 5 Pro, Redmi Buds 5, OPPO Enco Air3 Pro,
   Bose QC45 and Bose QC35 today; built to learn
   your brand. Sony and Soundcore add the ambient level with Focus on Voice or
   wind noise reduction; Nothing / CMF the ANC strength (Low / Mid / High / Adaptive)
@@ -178,7 +192,7 @@ same idea, built for Apple's own protocol, and the plugin this one is modelled o
 | Samsung Galaxy Buds2 (earbuds) | <img src="docs/icons/yes.svg" width="14" alt="yes"> left, right, case | <img src="docs/icons/yes.svg" width="14" alt="yes"> Off · ANC · Ambient | [@seth-reee](https://github.com/seth-reee) |
 | Soundcore Space 2 (over-ear)| <img src="docs/icons/yes.svg" width="14" alt="yes"> one figure        | <img src="docs/icons/yes.svg" width="14" alt="yes"> Off · ANC · Ambient (level, wind noise reduction) | [@Sovego](https://github.com/Sovego) |
 | Xiaomi Buds 5 Pro (earbuds) | <img src="docs/icons/yes.svg" width="14" alt="yes"> one figure        | <img src="docs/icons/yes.svg" width="14" alt="yes"> Off · ANC · Ambient                          | [@KentoNion](https://github.com/KentoNion)|
-| Redmi Buds 5 (earbuds)      | <img src="docs/icons/yes.svg" width="14" alt="yes"> left, right, case, and how long each should last | <img src="docs/icons/yes.svg" width="14" alt="yes"> Off · ANC · Transparency                    | this fork                      |
+| Redmi Buds 5 (earbuds)      | <img src="docs/icons/yes.svg" width="14" alt="yes"> left, right, case | <img src="docs/icons/yes.svg" width="14" alt="yes"> Off · ANC · Transparency                    | [@quocldce-sys](https://github.com/quocldce-sys) |
 | OPPO Enco Air3 Pro (earbuds) | <img src="docs/icons/yes.svg" width="14" alt="yes"> left, right, case | <img src="docs/icons/yes.svg" width="14" alt="yes"> Off · ANC · Ambient | [@Aryan447](https://github.com/Aryan447) |
 | Bose QC45 (over-ear)         | <img src="docs/icons/yes.svg" width="14" alt="yes"> one figure        | <img src="docs/icons/yes.svg" width="14" alt="yes"> ANC · Ambient (no Off) | [@Driskol](https://github.com/Driskol) |
 | Bose QC35 (over-ear)         | <img src="docs/icons/yes.svg" width="14" alt="yes"> one figure        | <img src="docs/icons/yes.svg" width="14" alt="yes"> Off · ANC (Low / High) — no Ambient | [@pedrohfp](https://github.com/pedrohfp) |

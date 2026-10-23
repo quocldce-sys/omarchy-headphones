@@ -145,6 +145,7 @@ Panel {
   readonly property int ambientMin: current ? current.ambientMin : 0
   readonly property int ambientMax: current ? current.ambientMax : 20
   readonly property string ambientVoiceLabel: current ? current.ambientVoiceLabel : "Focus on voice"
+  readonly property string ambientVoiceKey: current ? current.ambientVoiceKey : "Voice"
   // ANC strength, Nothing only: which strengths the device grades its noise
   // cancelling in, and the one it is at (or was last at).
   readonly property var ancLevels: current ? current.ancLevels : []
@@ -230,7 +231,7 @@ Panel {
     // would be offering keys that do nothing. Same for the strengths and the
     // latency switch.
     if (ambientRowVisible)
-      parts.push("[ ] Level", ambientVoiceLabel === "Focus on voice" ? "f Voice" : "f Wind")
+      parts.push("[ ] Level", "f " + ambientVoiceKey)
     for (var j = 0; j < ancLevelOptions.length; j++)
       if (levelRowVisible) parts.push(ancLevelOptions[j].key + " " + ancLevelOptions[j].label)
     if (latencyRowVisible) parts.push("g Latency")

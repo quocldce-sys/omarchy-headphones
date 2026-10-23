@@ -1044,6 +1044,153 @@ tools/xiaomi_probe.py 64:8F:DB:87:06:CB 15 set:ambient
 Turn `useModeControl` off first: SPP is one holder, like Sony's UUID.
 
 
+## Redmi Buds 5 — RCSP on the 0xFD2D service
+
+A second Xiaomi protocol, on a different device and a different channel from
+the Buds 5 Pro above: confirmed on **Redmi Buds 5** (firmware `0.0.1.0` as the
+Fast Pair stream reports it). Do not send these frames on the Buds 5 Pro's SPP
+socket, and do not send Compact GAIA here: the two sets of earbuds share a
+brand and nothing else. The frames below are the ones the Xiaomi Earbuds app
+(`com.mi.earphone` 1.38.0) writes, read from its code and then sent to the
+earbuds; every answer in this section was seen. The capture is
+[`docs/captures/redmi-buds-5.txt`](docs/captures/redmi-buds-5.txt), the SDP
+record [`docs/captures/redmi-buds-5-bluetoothctl.txt`](docs/captures/redmi-buds-5-bluetoothctl.txt).
+
+`bluetoothctl info` lists, among others:
+
+| UUID | What it is | Answers? |
+|---|---|---|
+| `df21fe2c-2515-4fdb-8886-f12c4d67927c` | Fast Pair Message Stream | **Opens, and its battery is not to be believed**: a model id (`2b677d`), an all-zero BLE address and firmware `0.0.1.0`, and then, depending on the session, no battery frame (150 s, including with a bud put in the case and taken out), one byte `fe` (126%, charging; the right bud was at 50%), or two bytes `94 94` (20% charging twice; both buds were at 65%) ([capture](docs/captures/redmi-buds-5-fastpair.txt)) |
+| `0000fd2d-0000-1000-8000-00805f9b34fb` | Xiaomi's 16-bit service | **Yes: RCSP, below** |
+| `00001101-0000-1000-8000-00805f9b34fb` | standard SPP | not tried |
+| `66666666-6666-6666-6666-666666666666`, `99999999-9999-9999-9999-999999999999` | vendor | not tried |
+| `00001100-d102-11e1-9b23-00025b00a5a5` | CSR GAIA | **absent**: this is not a Buds 5 Pro |
+
+BlueZ alone gives one figure for the pair (HFP), and the Fast Pair stream gives
+none that can be used: its battery frame was absent, then one byte above 100,
+then two bytes the reader does not read. The reader treats a byte whose level
+is above 100 as no reading, as the Fast Pair spec's 0–100 (`0x7F` unknown)
+implies. This is why the device has a bridge for its battery as well as for its
+noise control. The widget picks the backend from the reported name
+(`Redmi Buds 5`) and the `0000fd2d` UUID together, like TOZO and Huawei; the
+UUID alone is not a claim, since other Xiaomi products advertise it.
+
+The channel is opened the way Sony's is: a Profile1 for the UUID, `Role`
+`client`, `Channel` `0`, `AutoConnect` false, asynchronous `ConnectProfile`.
+BlueZ allows one registration per UUID, so the bridge, the probe and the
+phone's Xiaomi Earbuds app cannot hold the channel at once.
+
+### Frames
+
+RCSP, the framing the Jieli SDKs use:
+
+```
+FE DC BA <flags> <opcode> <len u16be> <body> EF
+```
+
+`flags` is `0x80` for a command and `0x40` when it wants a response; the earbuds'
+own announcements carry `0xC7`, a target-app field in the low bits. A command's
+body is `<sn> <param>`; a response's is `<status> <sn> <payload>`, status `00`
+being success. The sequence number is the one in the command.
+
+### The battery
+
+```
+->  fe dc ba c0 02 00 05 01 ff ff ff ff ef             GetTargetInfo, every attribute
+<-  fe dc ba 00 02 00 2c 00 01 05 01 10 38 10 38 05 03 27 17 50 6a 02 04 01
+    02 05 00 03 06 10 38 04 07 4b 50 64 02 08 02 02 09 00 02 0c 00 02 0d 02
+    02 0e 00 ef
+```
+
+The payload is `<length> <type> <value>` attributes, length counting the type.
+Type `7` is the batteries, one byte each for **left, right, case**: `4b 50 64`
+is 75, 80, 100, and the Xiaomi Earbuds app showed L 75, R 80, case 100. The
+other attributes are not read (`3` carries `27 17` and `50 6a`, which read as a
+vendor and a product id).
+
+The low seven bits are the level and every level seen was a multiple of five.
+Bit 7 is read as charging and `0xFF` as no reading, which is how the app reads
+the byte; no earbud was charging or out of range in the capture, so neither is
+confirmed here. The earbuds were not heard to announce a battery change on their
+own, so the bridge asks again every 30 s.
+
+### The noise control
+
+Config `11` is the noise control, two bytes, `<state> <level>`: state `0` off,
+`1` cancelling, `2` transparency. A config is `<len> <id u16be> <value>`, `len`
+counting the id and the value.
+
+```
+->  fe dc ba c0 f3 00 03 01 00 0b ef                    GetDeviceConfig 11
+<-  fe dc ba 00 f3 00 07 00 01 04 00 0b 02 00 ef        transparency, level 0
+->  fe dc ba c0 f2 00 06 04 04 00 0b 01 00 ef           SetDeviceConfig 11: cancelling
+<-  fe dc ba c7 0e 00 04 04 02 04 01 ef                  status report (the earbuds' own)
+    fe dc ba c7 f4 00 06 05 04 00 0b 01 00 ef           the config, announced
+    fe dc ba 00 f2 00 02 00 04 ef                       acknowledged, status 0
+```
+
+A set was acknowledged, announced and then read back the same on all four sets
+tried (transparency to itself, to cancelling, to off, and back). The three
+frames after a set arrive together, and the announcement also follows a change
+made on the earbuds. Nothing was answered to them. The second byte, the
+strength inside a state, was `0` in every state the earbuds were left in; the
+bridge sends the one a state was last seen at, or `0`.
+
+Not tried: the strengths of cancelling and transparency the app offers, the
+other configs (adaptive noise, the touch controls, the equaliser), wear
+detection, and what an earbud does while charging.
+
+### In the widget
+
+[`redmi-bridge`](redmi-bridge) follows [`BRIDGE.md`](BRIDGE.md): the Classic
+address, the JSON line, stdin `set <mode>`, the four exit codes. It prints the
+mode once the earbuds have said it, with the batteries.
+
+```json
+{"modes": true, "mode": "anc", "available": ["off","anc","ambient"],
+ "battery": {"left": 75, "right": 80, "case": 100, "charging": []}}
+```
+
+The panel calls the second mode *Transparency*, as the Xiaomi Earbuds app does
+(`modeLabels` in the `redmi` row). The Fast Pair stream, which is up but empty,
+does not shadow the bridge's battery for this backend.
+
+### Time left
+
+Not something the earbuds report: the bridge works it out. Levels come in steps
+of five, so a rate needs a stretch long enough to cross one.
+
+Every change in the three levels, and at least every 10 minutes, is a sample
+(time, left, right, case, charging bits), kept for 7 days (3000 at most) in
+`$XDG_STATE_HOME/omaphones/redmi-battery.json` under the earbuds' address. For
+one bud the stretch is the latest run of samples in which the bud reports, is
+not charging and is never higher than the sample after it, with no gap over 30
+minutes, and only its last 3 hours. It has to span 30 minutes and fall by at
+least one step. A least-squares line through it gives the rate, and the level
+over the rate is the minutes left, rounded to 5 and dropped above 48 hours. A
+charge, a bud in its case (no reading), or the earbuds away for half an hour
+starts a new stretch; so does anything the earbuds say that is not a level.
+
+It follows the pace the pair has been going at, with cancelling on or off, a
+louder volume or a cold battery, and says nothing about what the earbuds are
+rated for. It is sent as `"estimate": {"left": 410, "right": 395}` in the line
+that carries the battery, and left out when there is nothing to say.
+
+### The probe
+
+[`tools/redmi_probe.py`](tools/redmi_probe.py):
+
+```bash
+tools/redmi_probe.py AA:BB:CC:00:00:01                       # read the mode and battery
+tools/redmi_probe.py AA:BB:CC:00:00:01 --cycle off,anc,ambient
+```
+
+It reads by default. `--cycle` writes only when the initial mode is known,
+checks each set against what the earbuds report, and puts the initial mode back
+on every way out, saying `RESTORE FAILED` and exiting 2 if it cannot. Mode
+changes are audible. Turn `useModeControl` off first: the bridge holds the
+channel.
+
 ## Nothing NT Link — the Nothing X protocol on RFCOMM (channel 15, or 28)
 
 A fourth channel, and the first one read from other people's work rather than

@@ -1,0 +1,27 @@
+# bluetoothctl info for the Redmi Buds 5, connected to a laptop. The address is masked.
+Device AA:BB:CC:00:00:01 (public)
+	Name: Redmi Buds 5
+	Alias: Redmi Buds 5
+	Class: 0x00240404 (2360324)
+	Icon: audio-headset
+	Paired: yes
+	Bonded: no
+	Trusted: yes
+	Blocked: no
+	Connected: yes
+	LegacyPairing: no
+	CablePairing: no
+	UUID: SDP                       (00000001-0000-1000-8000-00805f9b34fb)
+	UUID: Serial Port               (00001101-0000-1000-8000-00805f9b34fb)
+	UUID: Headset                   (00001108-0000-1000-8000-00805f9b34fb)
+	UUID: Audio Sink                (0000110b-0000-1000-8000-00805f9b34fb)
+	UUID: A/V Remote Control Target (0000110c-0000-1000-8000-00805f9b34fb)
+	UUID: A/V Remote Control        (0000110e-0000-1000-8000-00805f9b34fb)
+	UUID: A/V Remote Control Cont.. (0000110f-0000-1000-8000-00805f9b34fb)
+	UUID: Handsfree                 (0000111e-0000-1000-8000-00805f9b34fb)
+	UUID: Generic Audio             (00001203-0000-1000-8000-00805f9b34fb)
+	UUID: Unknown                   (0000fd2d-0000-1000-8000-00805f9b34fb)
+	UUID: Vendor specific           (66666666-6666-6666-6666-666666666666)
+	UUID: Vendor specific           (99999999-9999-9999-9999-999999999999)
+	UUID: Vendor specific           (df21fe2c-2515-4fdb-8886-f12c4d67927c)
+	Battery Percentage: 0x41 (65)

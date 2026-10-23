@@ -489,7 +489,7 @@ function uuidsFromBluetoothctl(text) {
 //
 // The argument names a row lists are filled by bridgeArgs() from what the
 // follower knows: "address" is the Classic address, "uuid" the Sony MDR
-// generation from sonyUuidFor(), "name" the name the headset reports (which
+// generation from bridgeUuid(), "name" the name the headset reports (which
 // picks its row in the bridge's MODELS), "bleAddress" and "modelId" the two
 // things the Fast Pair stream announces. A bridge that gets one argument
 // today keeps getting one unless its model selection needs the reported name.
@@ -498,7 +498,7 @@ var BACKENDS = [
   { name: "sony", bridge: "sony-bridge",
     uuids: [SONY_MDR_V2_UUID, SONY_MDR_V1_UUID],
     args: ["address", "uuid", "name"],
-    ambient: { min: 0, max: 20, voice: "Focus on voice" } },
+    ambient: { min: 0, max: 20, voice: "Focus on voice", command: "voice", key: "Voice" } },
   { name: "samsung", bridge: "samsung-bridge",
     uuids: [SAMSUNG_SPP_UUID], args: ["address"] },
   { name: "nothing", bridge: "nothing-bridge",
@@ -507,7 +507,7 @@ var BACKENDS = [
     uuids: [CSR_GAIA_UUID], args: ["address"] },
   { name: "soundcore", bridge: "soundcore-bridge",
     uuidPrefix: SOUNDCORE_UUID_PREFIX, args: ["address"],
-    ambient: { min: 1, max: 5, voice: "Wind noise reduction" } },
+    ambient: { min: 1, max: 5, voice: "Wind noise reduction", command: "wind", key: "Wind" } },
   { name: "oppo", bridge: "oppo-bridge",
     uuids: [OPPO_HEYMELODY_UUID], args: ["address"] },
   { name: "bose", bridge: "bose-bridge",
@@ -535,17 +535,23 @@ var BACKENDS = [
     // Battery and noise control (Off / ANC / Transparency): the Redmi Buds 5
     // send Fast Pair a model id and no battery frame, so everything comes from
     // the Xiaomi RCSP service on 0xFD2D. Claimed by its reported name and that
-    // service, like the two rows above.
+    // service, like the two rows above. The Buds 5 Pro are not this: they speak
+    // Compact GAIA and are the `xiaomi` row.
     modelNames: ["Redmi Buds 5"],
     modelUuids: [REDMI_FD2D_UUID],
     args: ["address"],
+    // Their Fast Pair stream opens and stays empty: the bridge's figures are
+    // the battery, and an empty stream must not stand in front of them.
+    fastPairWithoutBattery: true,
     // What the Xiaomi Earbuds app calls the second mode.
     modeLabels: { ambient: "Transparency" } },
   { name: "jbl", bridge: "jbl-bridge",
     ble: true, args: ["bleAddress", "modelId"] }
 ]
 
-var AMBIENT_DEFAULT = { min: 0, max: 20, voice: "Focus on voice" }
+// A row without `ambient` has no dial and no switch: `command` is the word its
+// bridge reads for the switch, "" where there is none to write.
+var AMBIENT_DEFAULT = { min: 0, max: 20, voice: "Focus on voice", command: "", key: "Voice" }
 
 function backendRow(name) {
   for (var i = 0; i < BACKENDS.length; i++)
@@ -587,6 +593,14 @@ var CLASSIC_BACKENDS = []
 for (var backendIndex = 0; backendIndex < BACKENDS.length; backendIndex++)
   if (!BACKENDS[backendIndex].ble) CLASSIC_BACKENDS.push(BACKENDS[backendIndex].name)
 
+// True for a backend whose row says its devices open the Fast Pair stream and
+// never send a battery on it. Such a stream does not count as one until it
+// carries a level; every other row keeps the stream whatever it carries.
+function fastPairWithoutBattery(backend) {
+  var row = backendRow(backend)
+  return !!(row && row.fastPairWithoutBattery)
+}
+
 function isClassicBackend(backend) {
   return CLASSIC_BACKENDS.indexOf(str(backend)) !== -1
 }
@@ -625,19 +639,39 @@ function ambientRange(backend) {
   return row && row.ambient ? row.ambient : AMBIENT_DEFAULT
 }
 
+// Whether this backend's row has an Ambient dial to write (Sony, Soundcore).
+function hasAmbientDial(backend) {
+  var row = backendRow(backend)
+  return !!(row && row.ambient)
+}
+
+// The backend whose bridge dials a BLE address rather than a Classic one.
+function isBleBackend(backend) {
+  var row = backendRow(backend)
+  return !!(row && row.ble)
+}
+
+// The service UUID to hand a bridge whose row takes "uuid": the first of the
+// row's own UUIDs this device serves, in the row's order, or "" for a row that
+// takes none or a device that serves none of them.
+function bridgeUuid(backend, uuids) {
+  var row = backendRow(backend)
+  if (!row || row.args.indexOf("uuid") === -1 || !row.uuids) return ""
+  var list = []
+  var given = uuids || []
+  for (var i = 0; i < given.length; i++) list.push(str(given[i]).trim().toLowerCase())
+  for (var j = 0; j < row.uuids.length; j++)
+    if (list.indexOf(row.uuids[j]) !== -1) return row.uuids[j]
+  return ""
+}
+
 // Which Sony MDR UUID to hand the bridge, or "" for a device serving neither.
 // v2 wins where a device advertises both: v2 is what every Sony that works
 // today was connected on, and a device that serves both is reachable either
-// way, so the tested one is the one to keep sending.
+// way, so the tested one is the one to keep sending. The order is the Sony
+// row's: v2 first.
 function sonyUuidFor(uuids) {
-  var list = uuids || []
-  var v1 = ""
-  for (var i = 0; i < list.length; i++) {
-    var id = str(list[i]).trim().toLowerCase()
-    if (id === SONY_MDR_V2_UUID) return SONY_MDR_V2_UUID
-    if (id === SONY_MDR_V1_UUID) v1 = SONY_MDR_V1_UUID
-  }
-  return v1
+  return bridgeUuid("sony", uuids)
 }
 
 // The order the panel draws them in, and the names every bridge may use.
@@ -750,7 +784,7 @@ function bridgeCharging(state, key) {
 }
 
 // ---- How long a bud should last, in minutes, from a bridge that works it out
-//      from the battery history (the Redmi one does):
+//      from the history of its battery (the Redmi one does):
 //
 //        {"estimate": {"left": 410, "right": 395}}
 //

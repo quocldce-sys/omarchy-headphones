@@ -1,6 +1,6 @@
 {
   "model": "Redmi Buds 5",
-  "owner": "q",
+  "owner": "quocldce-sys",
   "bridge": "redmi-bridge",
   "capture": "docs/captures/redmi-buds-5.txt",
   "notes": "Battery and noise control, on the Xiaomi RCSP service 0000fd2d. The Fast Pair Message Stream answers with a model id and no battery frame. Two reads open the session (GetDeviceConfig 11, GetTargetInfo); the battery is attribute 7 (left 75, right 80, case 100, confirmed against the Xiaomi Earbuds app) and config 11 is state, level with state 0 off, 1 cancelling, 2 transparency. A set writes config 11 and the earbuds announce the new state on their own. Nothing is printed until the mode and the battery are both known.",
