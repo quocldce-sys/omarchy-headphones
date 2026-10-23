@@ -393,6 +393,7 @@ Item {
 
   function parkAddress(value) {
     if (String(value || "") === "") return
+    console.log("omaphones: parking " + value + " for the session")
     var next = {}
     for (var key in sonyParked) next[key] = sonyParked[key]
     next[String(value)] = true

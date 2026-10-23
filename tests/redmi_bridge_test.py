@@ -306,12 +306,23 @@ class RunLoop(unittest.TestCase):
                 result = s.bridge.on_io(-1, bridge.GLib.IO_IN)
             return result
 
-    def test_silence_is_found_by_the_timer_and_is_exit_3(self):
+    def test_silence_is_asked_again_and_then_given_up_as_transient_not_parked(self):
         s = self.open()
         self.assertIn(bridge.FIRST_ANSWER_MS, s.timers)
-        s.fire()
-        self.assertEqual(s.bridge.exit_code, bridge.EXIT_UNSUPPORTED)
+        for _ in range(bridge.SILENT_ASKS - 1):
+            s.frames.clear()
+            self.assertTrue(s.bridge.first_answer_timeout())
+            self.assertIsNone(s.bridge.exit_code)
+            self.assertEqual([f[4] for f in s.frames], [0xF3, 0x02])
+        self.assertFalse(s.bridge.first_answer_timeout())
+        self.assertEqual(s.bridge.exit_code, bridge.EXIT_TRANSIENT)
+        self.assertNotEqual(s.bridge.exit_code, bridge.EXIT_UNSUPPORTED)
         self.assertEqual(s.lines[-1]["modes"], False)
+
+    def test_the_timer_keeps_going_while_the_earbuds_are_silent(self):
+        s = self.open()
+        self.assertTrue(s.bridge.first_answer_timeout())
+        self.assertEqual(s.bridge.silent_asks, 1)
 
     def test_an_answer_means_the_timer_finds_nothing_to_report(self):
         s = self.open()
@@ -504,7 +515,7 @@ class Silent(unittest.TestCase):
         s = Session()
         s.do_open()
         s.device(NOISE_AMBIENT.hex(" "))
-        s.bridge.first_answer_timeout()
+        self.assertFalse(s.bridge.first_answer_timeout())
         self.assertIsNone(s.bridge.exit_code)
 
 

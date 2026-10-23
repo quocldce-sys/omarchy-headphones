@@ -22,8 +22,11 @@ enough to go on, and never a figure from a datasheet.
 Exit codes are BRIDGE.md's: 0 clean stop, 1 transient (the channel never
 opened, or closed under us; also refused, since the earbuds may serve the
 channel to one client and the phone's Xiaomi Earbuds app holding it is the
-likely case), 3 linked but silent (nothing answered), 4 setup failure
-(bad arguments, a Python without D-Bus).
+likely case; also silent after SILENT_ASKS asks, FIRST_ANSWER_MS apart: these
+earbuds are claimed by name and service and so are known to answer, and a link
+that has only just come back is slow to start rather than deaf, so silence is
+retried on a growing pause and never parked as exit 3), 4 setup failure (bad
+arguments, a Python without D-Bus).
 
 Protocol, as the Redmi Buds 5 answered it, and as the Xiaomi Earbuds app
 (com.mi.earphone 1.38.0) reads it: RCSP on the SPP service
@@ -112,6 +115,7 @@ REPLY_TIMEOUT = 5
 CONNECT_TIMEOUT = 30
 CONNECT_DELAY = 500
 FIRST_ANSWER_MS = 5000
+SILENT_ASKS = 6
 MODE_GRACE_MS = 2000
 POLL_MS = 30000
 RECHECK_MS = 800
@@ -401,6 +405,7 @@ class Bridge:
         self.pending = ""
         self.sn = 0
         self.answered = False
+        self.silent_asks = 0
         self.grace_over = False
         self.last_line = None
         self.mode = None
@@ -527,11 +532,20 @@ class Bridge:
         return False
 
     def first_answer_timeout(self):
-        # Linked, asked, and nothing came back: the channel is served but not
-        # this part of it, so the address is parked, exit code 3.
-        if self.exit_code is None and not self.answered:
-            self.finish(EXIT_UNSUPPORTED, "the Redmi Buds did not answer")
-        return False
+        # Linked, asked, and nothing came back yet. These earbuds are claimed by
+        # name and service, so they are known to answer: a link that has only just
+        # come back (out of the case, say) is slow to start answering rather than
+        # deaf. Ask again every FIRST_ANSWER_MS, SILENT_ASKS times over, then give
+        # the link up as transient (exit 1: a retry on a growing pause) and not as
+        # exit 3, which would park the address for the whole session.
+        if self.exit_code is not None or self.answered:
+            return False
+        self.silent_asks += 1
+        if self.silent_asks >= SILENT_ASKS:
+            self.finish(EXIT_TRANSIENT, "the Redmi Buds did not answer")
+            return False
+        self.ask()
+        return True
 
     def grace_timeout(self):
         # The mode had its chance to arrive with the battery; if it has not,

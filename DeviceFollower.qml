@@ -425,6 +425,24 @@ Item {
   // connected, so it is read once per connection with the tool that prints it
   // rather than watched. One probe at a time, and no need to check whose answer
   // came back: this follower asks about one address and no other.
+  function startUuidProbe() {
+    uuidProbeTries = 0
+    probeUuids()
+  }
+
+  // A link that has only just come back (the earbuds out of their case, say) can
+  // answer `bluetoothctl info` with a failure, or with no UUID yet. Read as the
+  // device serving nothing, that routes it to the wrong backend, and the probe
+  // is not asked again until the next connection. So a probe that found nothing
+  // is asked a few more times, three seconds apart, before it is believed.
+  property int uuidProbeTries: 0
+  Timer {
+    id: uuidProbeRetry
+    interval: 3000
+    repeat: false
+    onTriggered: follower.probeUuids()
+  }
+
   function probeUuids() {
     if (!connected || address === "") {
       deviceUuids = []
@@ -638,7 +656,7 @@ Item {
       // list left behind would keep a bridge armed for a device in its case.
       deviceUuids = []
     }
-    if (connected) probeUuids()
+    if (connected) startUuidProbe()
     checkLowBattery()
   }
 
@@ -649,7 +667,7 @@ Item {
   // no change.
   Component.onCompleted: {
     if (connected && address !== "" && service) service.rememberAddress(address)
-    probeUuids()
+    startUuidProbe()
     checkLowBattery()
   }
   // A refresh that never lands must not hold the per-earbud rows on screen for
@@ -783,6 +801,8 @@ Item {
       follower.ancAnswered = false
     }
     onExited: function(exitCode, exitStatus) {
+      console.log("omaphones: " + follower.controlBackend + "-bridge for " + follower.address
+        + " exited " + exitCode)
       // The same four codes jbl-bridge uses: 0 clean stop · 1 transient, retry
       // with a growing pause · 3 linked but silent to every query type it knows
       // · 4 could not start at all. Both of the last two are about this device
@@ -836,9 +856,16 @@ Item {
     onExited: function(exitCode, exitStatus) {
       // A probe that failed says nothing about the device, and an empty list is
       // exactly that: no Sony or GAIA UUID seen, so a Fast Pair BLE address decides.
-      follower.deviceUuids = exitCode === 0
-        ? Model.uuidsFromBluetoothctl(uuidProbeOut.text)
-        : []
+      var found = exitCode === 0 ? Model.uuidsFromBluetoothctl(uuidProbeOut.text) : []
+      console.log("omaphones: uuid probe for " + follower.address + " exited " + exitCode
+        + " with " + found.length + " uuids, try " + (follower.uuidProbeTries + 1))
+      if (found.length === 0 && follower.connected && follower.uuidProbeTries < 5) {
+        follower.uuidProbeTries += 1
+        uuidProbeRetry.restart()
+        return
+      }
+      follower.uuidProbeTries = 0
+      follower.deviceUuids = found
     }
   }
 
