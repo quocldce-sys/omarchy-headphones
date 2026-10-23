@@ -241,10 +241,17 @@ def registration_error(error):
 
 
 def component(byte):
-    """(level, charging) for one battery byte; level -1 when unreported."""
+    """(level, charging) for one battery byte; level -1 when unreported.
+
+    The spec's levels are 0-100. 0x7F is "unknown", and anything else above 100
+    is not a level either: the Redmi Buds 5 send 0xFE as their only battery
+    byte, which read as 126% and charging."""
     if (byte & NO_READING) == NO_READING:
         return -1, False
-    return byte & 0x7F, bool(byte & 0x80)
+    level = byte & 0x7F
+    if level > 100:
+        return -1, False
+    return level, bool(byte & 0x80)
 
 
 def address_from_path(path):

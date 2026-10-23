@@ -143,6 +143,20 @@ class FastPair(unittest.TestCase):
         self.send(r, fd, canonical.frame('jbl', 'gfps', 'battery'))
         self.assertEqual(self.lines[-1]['left'], 70)
 
+    def test_a_byte_above_100_is_not_a_level(self):
+        # 0xFE is what a Redmi Buds 5 sends as its only battery byte (seen in
+        # its Fast Pair stream); the spec's levels are 0-100 and 0x7F unknown.
+        # Synthetic neighbours around the boundary.
+        for byte in (0xfe, 0x7e, 101, 0xe5):
+            self.assertEqual(reader.component(byte), (-1, False), hex(byte))
+        self.assertEqual(reader.component(100), (100, False))
+        self.assertEqual(reader.component(0x80 | 100), (100, True))
+        r, fd = self.stream('jbl')
+        self.send(r, fd, bytes.fromhex('03 03 00 01 fe'))
+        last = self.lines[-1]
+        self.assertTrue(last['single'])
+        self.assertEqual((last['battery'], last['batteryCharging']), (-1, False))
+
     def test_synthetic_charging_and_unknown_components(self):
         # Protocol boundary inputs; not claims about what these owners captured.
         for byte, expected in [(0, (0, False)), (100, (100, False)),

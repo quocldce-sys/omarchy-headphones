@@ -1228,3 +1228,11 @@ Deno.test("Redmi Buds 5 offers the three modes, and names the second one as its 
   const row = Model.backendRow("redmi");
   assertEquals(row.modeLabels.ambient, "Transparency");
 });
+
+Deno.test("a reader level above 100 is not a level", () => {
+  assertEquals(Model.readerLevel({ battery: 126 }, "battery"), -1);
+  assertEquals(Model.readerLevel({ battery: 101 }, "battery"), -1);
+  assertEquals(Model.readerLevel({ battery: 100 }, "battery"), 100);
+  assertEquals(Model.readerLevel({ battery: 0 }, "battery"), 0);
+  assertEquals(Model.readerLevel({ battery: -1 }, "battery"), -1);
+});
